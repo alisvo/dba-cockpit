@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Oracle DBA Cockpit</title>
+  <meta name="description" content="Oracle DBA'leri için Data Pump, RMAN, kullanıcı, tablespace, kill, teşhis sorguları, TNS ve SGA/PGA/HugePages komut üretici. Tamamen tarayıcıda çalışır.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%23e5484d%22/><text x=%2250%22 y=%2268%22 font-size=%2256%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Arial%22 font-weight=%22bold%22>O</text></svg>">
+  <script>try{var t=JSON.parse(localStorage.getItem('dbac.theme'));if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+</head>
+<body data-engine="oracle">
+<div id="app" v-cloak>
+  <app-top engine="oracle"></app-top>
+  <div class="shell">
+    <side-nav :modules="modules" :current="tab" title="Oracle · 11gR2 – 23ai">
+      Komutlar SQL*Plus / SQLcl / bash için üretilir. Form değerleri yalnızca bu tarayıcıda saklanır; <b>şifreler saklanmaz</b>.
+    </side-nav>
+
+    <main class="main">
+
+      <!-- ===================== DATA PUMP ===================== -->
+      <template v-if="tab === 'datapump'">
+        <div class="page-head">
+          <div><h2>📦 Data Pump (expdp / impdp)</h2>
+            <p>Parametre dosyası (parfile) üretir: şifre komut satırında görünmez, tırnak/kaçış derdi olmaz. Uyumsuz seçenekler uyarılarla işaretlenir.</p></div>
+          <button class="btn ghost sm" @click="resetDp">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>İşlem</h3>
+              <div class="grid">
+                <div class="f span2"><span>İşlem türü</span>
+                  <seg full v-model="dp.type" :options="[['expdp','EXPORT · expdp'],['impdp','IMPORT · impdp']]"></seg></div>
+                <label class="f"><span>Kapsam</span>
+                  <select v-model="dp.mode">
+                    <option value="schemas">Şema (SCHEMAS)</option>
+                    <option value="tables">Tablo (TABLES)</option>
+                    <option value="tablespaces">Tablespace (TABLESPACES)</option>
+                    <option value="full">Tüm veritabanı (FULL)</option>
+                  </select></label>
+                <label class="f" v-if="dp.mode !== 'full'"><span>{{ dp.mode === 'tables' ? 'Tablolar' : dp.mode === 'schemas' ? 'Şemalar' : 'Tablespace\'ler' }} <em>virgülle</em></span>
+                  <input class="mono" v-model="dp.targets" :placeholder="dp.mode === 'tables' ? 'HR.EMPLOYEES, HR.JOBS' : 'HR, SCOTT'"></label>
+                <label class="f"><span>Kullanıcı</span><input class="mono" v-model="dp.user" placeholder="system"></label>
+                <label class="f"><span>TNS / servis</span><input class="mono" v-model="dp.tns" placeholder="ORCLPDB"></label>
+                <label class="f"><span>DIRECTORY</span><input class="mono" v-model="dp.directory" placeholder="DATA_PUMP_DIR"></label>
+                <label class="f"><span>Directory OS yolu <em>yardımcı script için</em></span><input class="mono" v-model="dp.dirPath"></label>
+                <label class="f"><span>DUMPFILE <em>boş = otomatik</em></span><input class="mono" v-model="dp.dumpfile" placeholder="exp_%U.dmp"></label>
+                <label class="f"><span>LOGFILE <em>boş = otomatik</em></span><input class="mono" v-model="dp.logfile"></label>
+                <label class="f"><span>PARALLEL</span><input type="number" min="1" max="64" v-model.number="dp.parallel"></label>
+                <label class="f"><span>CONTENT</span>
+                  <select v-model="dp.content"><option>ALL</option><option>DATA_ONLY</option><option>METADATA_ONLY</option></select></label>
+              </div>
+            </div>
+
+            <div class="card" v-if="dp.type === 'expdp'">
+              <h3>Export seçenekleri</h3>
+              <div class="grid">
+                <label class="f"><span>COMPRESSION</span>
+                  <select v-model="dp.compression">
+                    <option value="NONE">NONE</option>
+                    <option value="METADATA_ONLY">METADATA_ONLY (lisanssız)</option>
+                    <option value="DATA_ONLY">DATA_ONLY (ACO lisansı)</option>
+                    <option value="ALL">ALL (ACO lisansı)</option>
+                  </select></label>
+                <label class="f"><span>FILESIZE <em>parça boyutu</em></span><input class="mono" v-model="dp.filesize" placeholder="10G"></label>
+                <label class="f"><span>VERSION <em>eski sürüme import için</em></span><input class="mono" v-model="dp.version" placeholder="12.2"></label>
+                <label class="f"><span>NETWORK_LINK <em>DB link</em></span><input class="mono" v-model="dp.networkLink"></label>
+                <label class="f span2"><span>QUERY <em>ör. HR.EMPLOYEES:"WHERE hire_date > SYSDATE-365"</em></span><input class="mono" v-model="dp.query"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="dp.consistent"><b>FLASHBACK_TIME=SYSTIMESTAMP</b><small>Tutarlı (aynı ana ait) export</small></chk>
+                <chk v-model="dp.estimateOnly"><b>ESTIMATE_ONLY=YES</b><small>Sadece boyut tahmini, dosya yazmaz</small></chk>
+              </div>
+            </div>
+
+            <div class="card" v-else>
+              <h3>Import seçenekleri</h3>
+              <div class="grid">
+                <label class="f"><span>REMAP_SCHEMA <em>KAYNAK:HEDEF, virgülle</em></span><input class="mono" v-model="dp.remapSchema" placeholder="PROD:TEST"></label>
+                <label class="f"><span>REMAP_TABLESPACE</span><input class="mono" v-model="dp.remapTablespace" placeholder="DATA_PROD:DATA_TEST"></label>
+                <label class="f"><span>TABLE_EXISTS_ACTION</span>
+                  <select v-model="dp.tea">
+                    <option value="SKIP">SKIP – varsa atla</option>
+                    <option value="APPEND">APPEND – üstüne ekle</option>
+                    <option value="TRUNCATE">TRUNCATE – boşalt, yükle</option>
+                    <option value="REPLACE">REPLACE – drop &amp; create</option>
+                  </select></label>
+                <label class="f"><span>NETWORK_LINK <em>dump'sız import</em></span><input class="mono" v-model="dp.networkLink"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="dp.archiveOff"><b>DISABLE_ARCHIVE_LOGGING:Y</b><small>Redo üretimini azaltır (12c+)</small></chk>
+                <chk v-model="dp.transformOid"><b>OID:N</b><small>Object type OID çakışmasını önler</small></chk>
+                <chk v-model="dp.sqlfile"><b>SQLFILE</b><small>Import yerine DDL'i dosyaya yaz</small></chk>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Ortak seçenekler &amp; filtreler</h3>
+              <div class="checks">
+                <chk v-model="dp.excludeStats"><b>EXCLUDE=STATISTICS</b><small>Hedefte yeniden toplayın</small></chk>
+                <chk v-model="dp.cluster"><b>CLUSTER=N</b><small>RAC'ta işçileri tek node'da tut</small></chk>
+                <chk v-model="dp.logtime"><b>LOGTIME=ALL</b><small>Log satırlarına zaman damgası (12c+)</small></chk>
+                <chk v-model="dp.metrics"><b>METRICS=YES</b><small>Nesne başına süre bilgisi</small></chk>
+              </div>
+              <div class="grid" style="margin-top:12px">
+                <label class="f"><span>EXCLUDE <em>her satıra bir tane</em></span><textarea class="mono" v-model="dp.exclude" placeholder="TABLE:&quot;IN ('AUDIT_LOG')&quot;&#10;GRANT"></textarea></label>
+                <label class="f"><span>INCLUDE <em>her satıra bir tane</em></span><textarea class="mono" v-model="dp.include" placeholder="PROCEDURE&#10;TABLE:&quot;LIKE 'EMP%'&quot;"></textarea></label>
+              </div>
+            </div>
+          </div>
+
+          <div class="stack sticky-col">
+            <notes :items="dpOut.notes"></notes>
+            <code-box title="Parametre dosyası" lang="conf" :code="dpOut.parText" :file="dpOut.parfile"></code-box>
+            <code-box title="Çalıştırma komutu" lang="sh" :code="dpOut.cmd" file="run_datapump.sh"></code-box>
+            <code-box title="Tek satır (parfile'sız) alternatif" lang="sh" :code="dpOut.inline"></code-box>
+            <code-box title="Directory, izleme ve attach" :code="dpHelper" file="datapump_helper.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== RMAN ===================== -->
+      <template v-if="tab === 'rman'">
+        <div class="page-head">
+          <div><h2>🛟 RMAN Yedekleme Betiği</h2>
+            <p>Level 0/1, arşiv, doğrulama betikleri; kalıcı CONFIGURE ayarları ve cron'a hazır bash sarmalayıcı.</p></div>
+          <button class="btn ghost sm" @click="resetRm">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Yedek tipi</h3>
+              <div class="presets">
+                <button class="preset" :class="{ on: rm.kind === 'l0' }" @click="rm.kind = 'l0'"><b>Incremental Level 0</b><small>Haftalık taban yedek</small></button>
+                <button class="preset" :class="{ on: rm.kind === 'l1' }" @click="rm.kind = 'l1'"><b>Level 1 Differential</b><small>Son L0/L1'den bu yana</small></button>
+                <button class="preset" :class="{ on: rm.kind === 'l1c' }" @click="rm.kind = 'l1c'"><b>Level 1 Cumulative</b><small>Son L0'dan bu yana</small></button>
+                <button class="preset" :class="{ on: rm.kind === 'arch' }" @click="rm.kind = 'arch'"><b>Archivelog</b><small>Saatlik arşiv yedeği</small></button>
+                <button class="preset" :class="{ on: rm.kind === 'full' }" @click="rm.kind = 'full'"><b>Full (incremental değil)</b><small>Bağımsız tam yedek</small></button>
+                <button class="preset" :class="{ on: rm.kind === 'validate' }" @click="rm.kind = 'validate'"><b>Validate</b><small>Bozulma testi, yedek almaz</small></button>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Kanal ve hedef</h3>
+              <div class="grid">
+                <div class="f"><span>Cihaz</span><seg full v-model="rm.device" :options="[['DISK','DISK'],['SBT','SBT / Tape']]"></seg></div>
+                <label class="f"><span>Kanal sayısı</span><input type="number" min="1" max="32" v-model.number="rm.channels"></label>
+                <label class="f span2" v-if="rm.device === 'DISK'"><span>FORMAT <em>%d=DB, %T=tarih, %U=benzersiz</em></span><input class="mono" v-model="rm.format"></label>
+                <label class="f span2" v-else><span>SBT PARMS</span><input class="mono" v-model="rm.sbtParms" placeholder="SBT_LIBRARY=/opt/omni/lib/libob2oracle8_64bit.so"></label>
+                <label class="f"><span>Sıkıştırma</span>
+                  <select v-model="rm.compress">
+                    <option value="NONE">Yok</option>
+                    <option value="BASIC">BASIC (lisanssız)</option>
+                    <option value="LOW">LOW (ACO)</option>
+                    <option value="MEDIUM">MEDIUM (ACO)</option>
+                    <option value="HIGH">HIGH (ACO)</option>
+                  </select></label>
+                <label class="f"><span>SECTION SIZE <em>bigfile için</em></span><input class="mono" v-model="rm.sectionSize" placeholder="32G"></label>
+                <label class="f"><span>TAG <em>boş = otomatik</em></span><input class="mono" v-model="rm.tag"></label>
+                <label class="f"><span>Saklama (gün)</span><input type="number" min="1" v-model.number="rm.retentionDays"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="rm.plusArch" v-if="rm.kind !== 'arch' && rm.kind !== 'validate'"><b>PLUS ARCHIVELOG</b><small>Yedeğin önce/sonrasında arşivleri al</small></chk>
+                <chk v-model="rm.deleteArchInput" v-if="rm.kind !== 'validate'"><b>DELETE INPUT</b><small>Yedeklenen arşivleri sil</small></chk>
+                <chk v-model="rm.ctlSpfile" v-if="rm.kind !== 'validate'"><b>CONTROLFILE + SPFILE</b><small>Ayrıca yedekle</small></chk>
+                <chk v-model="rm.crosscheck" v-if="rm.kind !== 'validate'"><b>CROSSCHECK</b><small>Kayıp parçaları işaretle</small></chk>
+                <chk v-model="rm.deleteObsolete" v-if="rm.kind !== 'validate'"><b>DELETE OBSOLETE</b><small>Saklama dışını temizle</small></chk>
+                <chk v-model="rm.checkLogical" v-if="rm.kind === 'validate'"><b>CHECK LOGICAL</b><small>Mantıksal bozulmayı da tara</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="rmOut.notes"></notes>
+            <code-box title="RMAN betiği" lang="sql" :code="rmOut.script" :file="rmOut.file"></code-box>
+            <code-box title="Kalıcı CONFIGURE ayarları" lang="sql" :code="rmOut.cfg" file="rman_configure.rcv"></code-box>
+            <code-box title="Bash sarmalayıcı + cron" lang="sh" :code="rmOut.wrapper" :file="'rman_' + rm.kind + '.sh'"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== USER ===================== -->
+      <template v-if="tab === 'user'">
+        <div class="page-head">
+          <div><h2>👤 Kullanıcı Oluşturma &amp; Yetkilendirme</h2>
+            <p>PDB veya CDB common kullanıcı, hazır yetki şablonları, rol üzerinden okuma yetkisi ve kriptografik şifre üretici.</p></div>
+          <button class="btn ghost sm" @click="resetUsr(); regenPwd()">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Şablon</h3>
+              <div class="presets">
+                <button class="preset" :class="{ on: usr.preset === 'readonly' }" @click="usr.preset = 'readonly'"><b>📖 Salt okunur</b><small>Raporlama / BI, şema üzerinde READ</small></button>
+                <button class="preset" :class="{ on: usr.preset === 'developer' }" @click="usr.preset = 'developer'"><b>💻 Uygulama / geliştirici</b><small>Kendi şemasında nesne yaratır</small></button>
+                <button class="preset" :class="{ on: usr.preset === 'dba' }" @click="usr.preset = 'dba'"><b>🛡️ DBA</b><small>Tam yetki – dikkatli kullanın</small></button>
+              </div>
+              <div class="grid" style="margin-top:14px" v-if="usr.preset === 'readonly'">
+                <label class="f"><span>Okunacak şema</span><input class="mono" v-model="usr.targetSchema"></label>
+                <div class="f"><span>Yöntem</span><seg full v-model="usr.readMode" :options="[['loop','PL/SQL döngüsü'],['schema23','23ai şema yetkisi']]"></seg></div>
+                <div class="span2 checks" v-if="usr.readMode === 'loop'"><chk v-model="usr.viaRole"><b>Rol üzerinden ver</b><small>&lt;ŞEMA&gt;_READ_ROLE yaratır, kullanıcıya rolü verir</small></chk></div>
+              </div>
+              <div class="checks" style="margin-top:14px" v-if="usr.preset === 'developer'">
+                <chk v-model="usr.devRole23"><b>DB_DEVELOPER_ROLE</b><small>23ai hazır geliştirici rolü</small></chk>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Hesap</h3>
+              <div class="grid">
+                <div class="f span2"><span>Kapsam</span><seg full v-model="usr.scope" :options="[['pdb','PDB / non-CDB yerel kullanıcı'],['common','CDB common (C##)']]"></seg></div>
+                <label class="f"><span>Kullanıcı adı</span><input class="mono" v-model="usr.username"></label>
+                <label class="f" v-if="usr.scope === 'pdb'"><span>PDB adı <em>boş = geçme</em></span><input class="mono" v-model="usr.container"></label>
+                <label class="f span2"><span>Şifre <button class="linkbtn" @click="regenPwd">⚡ Yeni üret</button></span>
+                  <div class="inline"><input class="mono" v-model="usr.password"><button class="btn sm" @click="copy(usr.password, 'Şifre kopyalandı')">Kopyala</button></div></label>
+                <label class="f"><span>Default tablespace</span><input class="mono" v-model="usr.defaultTs"></label>
+                <label class="f"><span>Temporary tablespace</span><input class="mono" v-model="usr.tempTs"></label>
+                <label class="f"><span>Kota</span>
+                  <select v-model="usr.quota">
+                    <option value="UNLIMITED">UNLIMITED</option><option>100M</option><option>500M</option><option>1G</option>
+                    <option>10G</option><option>50G</option><option value="NONE">Kota verme</option>
+                  </select></label>
+                <label class="f"><span>Profil</span><input class="mono" v-model="usr.profile" :disabled="usr.svcProfile"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="usr.svcProfile"><b>Servis hesabı profili</b><small>Şifresi dolmayan APP_SVC_PROFILE yarat</small></chk>
+                <chk v-model="usr.expire"><b>PASSWORD EXPIRE</b><small>İlk girişte şifre değiştirsin</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="usrOut.notes"></notes>
+            <code-box title="Kullanıcı scripti" :code="usrOut.sql" file="create_user.sql"></code-box>
+            <code-box title="Kilitleme / silme / şifre sıfırlama" :code="usrOut.drop" file="user_admin.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== STORAGE ===================== -->
+      <template v-if="tab === 'storage'">
+        <div class="page-head">
+          <div><h2>💾 Tablespace &amp; Datafile</h2>
+            <p>Datafile ekleme/büyütme, yeni tablespace, TEMP yönetimi ve güvenli drop. Smallfile 32 GB sınırı ve ASM yolları kontrol edilir.</p></div>
+          <button class="btn ghost sm" @click="resetSt">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>İşlem</h3>
+              <seg full v-model="st.op" :options="[['add_df','Datafile ekle'],['resize_df','Resize'],['create_ts','Yeni tablespace'],['temp','TEMP'],['drop_ts','Drop']]"></seg>
+              <div class="grid" style="margin-top:14px">
+                <label class="f" v-if="st.op !== 'temp'"><span>Tablespace</span><input class="mono" v-model="st.tsName"></label>
+                <label class="f" v-else><span>Temporary tablespace</span><input class="mono" v-model="st.tempName"></label>
+                <label class="f" v-if="st.op !== 'drop_ts'"><span>Dosya yolu / ASM disk grubu <em>boş = OMF</em></span><input class="mono" v-model="st.filePath" placeholder="+DATA veya /u02/oradata/ORCL/data02.dbf"></label>
+                <label class="f" v-if="st.op !== 'drop_ts'"><span>{{ st.op === 'resize_df' ? 'Yeni boyut' : 'Başlangıç boyutu' }}</span><input class="mono" v-model="st.size"></label>
+                <template v-if="['add_df','create_ts','temp'].includes(st.op)">
+                  <label class="f"><span>AUTOEXTEND NEXT</span><input class="mono" v-model="st.next"></label>
+                  <label class="f"><span>MAXSIZE</span>
+                    <select v-model="st.maxSize">
+                      <option value="32767M">32767M (smallfile 8K üst sınır)</option>
+                      <option value="UNLIMITED">UNLIMITED</option>
+                      <option value="16G">16G</option>
+                      <option value="CUSTOM">Özel değer…</option>
+                    </select></label>
+                  <label class="f" v-if="st.maxSize === 'CUSTOM'"><span>Özel MAXSIZE</span><input class="mono" v-model="st.customMax" placeholder="2T"></label>
+                </template>
+                <template v-if="st.op === 'create_ts'">
+                  <label class="f"><span>Blok boyutu (KB)</span>
+                    <select v-model.number="st.blockSize"><option :value="2">2</option><option :value="4">4</option><option :value="8">8 (varsayılan)</option><option :value="16">16</option><option :value="32">32</option></select></label>
+                </template>
+              </div>
+              <div class="checks" style="margin-top:12px" v-if="st.op === 'create_ts' || st.op === 'temp'">
+                <chk v-model="st.bigfile"><b>BIGFILE</b><small>Tek dosya, 32 TB'a kadar (8K)</small></chk>
+                <chk v-model="st.encrypt" v-if="st.op === 'create_ts'"><b>TDE ENCRYPT</b><small>AES256 (Advanced Security)</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="stOut.notes"></notes>
+            <code-box title="Üretilen SQL" :code="stOut.sql" file="tablespace.sql"></code-box>
+            <code-box v-if="st.op === 'resize_df'" title="Küçültülebilir minimum boyut (HWM)" :code="hwmSql" file="datafile_hwm.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== SESSION ===================== -->
+      <template v-if="tab === 'session'">
+        <div class="page-head">
+          <div><h2>⚡ Oturum Bulma &amp; Sonlandırma</h2>
+            <p>Kademeli sonlandırma: önce SQL iptali, sonra disconnect/kill, en son işletim sistemi. Toplu kill komutları önce listelenir.</p></div>
+          <button class="btn ghost sm" @click="resetSs">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <div class="grid g4">
+            <label class="f"><span>SID</span><input class="mono" v-model="ss.sid"></label>
+            <label class="f"><span>SERIAL#</span><input class="mono" v-model="ss.serial"></label>
+            <label class="f"><span>OS SPID</span><input class="mono" v-model="ss.spid"></label>
+            <label class="f"><span>ORACLE_SID <em>orakill</em></span><input class="mono" v-model="ss.oraSid"></label>
+            <label class="f"><span>Kullanıcı <em>toplu işlem</em></span><input class="mono" v-model="ss.username"></label>
+            <div class="f"><span>RAC</span><chk v-model="ss.rac"><b>@INST_ID ekle</b></chk></div>
+            <label class="f" v-if="ss.rac"><span>INST_ID</span><input class="mono" v-model="ss.instId"></label>
+          </div>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <code-box title="1 · Oturumu bul" :code="sessFind"></code-box>
+            <code-box title="2 · Veritabanı seviyesinde sonlandır" :code="sessKill"></code-box>
+          </div>
+          <div class="stack">
+            <code-box title="3 · İşletim sistemi seviyesi (son çare)" lang="sh" :code="sessOs"></code-box>
+            <notes :items="[['warn','`kill -9` yalnızca **LOCAL=NO** kullanıcı proseslerine uygulanır. PMON, SMON, LGWR gibi arka plan proseslerini öldürmek instance\'ı düşürür.']]"></notes>
+            <code-box title="Toplu: kullanıcının tüm oturumları" :code="sessMass" file="kill_user_sessions.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== QUERIES ===================== -->
+      <template v-if="tab === 'queries'">
+        <div class="page-head">
+          <div><h2>🔍 Teşhis &amp; Troubleshooting Sorguları</h2>
+            <p>Kilit, performans, alan, yedek/Data Guard ve bakım için {{ queries.length }} hazır sorgu. Lisans gerektirenler etiketlidir.</p></div>
+        </div>
+        <query-lib :queries="queries" :cats="qcats"></query-lib>
+      </template>
+
+      <!-- ===================== TNS ===================== -->
+      <template v-if="tab === 'tns'">
+        <div class="page-head">
+          <div><h2>🌐 TNS &amp; Bağlantı Cümleleri</h2>
+            <p>tnsnames.ora, Easy Connect, JDBC, python-oracledb ve ODP.NET. Birden fazla host (SCAN/Data Guard) için failover ve zaman aşımı ayarları.</p></div>
+          <button class="btn ghost sm" @click="resetTn">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Hedef</h3>
+              <div class="grid">
+                <label class="f span2"><span>Host(lar) <em>virgülle: primary, standby</em></span><input class="mono" v-model="tn.hosts"></label>
+                <label class="f"><span>Port</span><input class="mono" v-model="tn.port"></label>
+                <label class="f"><span>TNS alias</span><input class="mono" v-model="tn.alias"></label>
+                <div class="f"><span>Tanımlayıcı</span><seg full v-model="tn.idType" :options="[['service','SERVICE_NAME'],['sid','SID']]"></seg></div>
+                <label class="f"><span>{{ tn.idType === 'sid' ? 'SID' : 'Servis adı' }}</span><input class="mono" v-model="tn.service"></label>
+                <div class="f"><span>Protokol</span><seg full v-model="tn.protocol" :options="[['TCP','TCP'],['TCPS','TCPS (TLS)']]"></seg></div>
+                <label class="f"><span>Sunucu tipi</span><select v-model="tn.server"><option>DEDICATED</option><option>SHARED</option><option>POOLED</option></select></label>
+                <label class="f"><span>Kullanıcı <em>örnekler için</em></span><input class="mono" v-model="tn.user"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="tn.failover"><b>LOAD_BALANCE + FAILOVER</b><small>Birden fazla host varsa</small></chk>
+                <chk v-model="tn.timeouts"><b>Zaman aşımları</b><small>CONNECT_TIMEOUT, RETRY_COUNT (12c+)</small></chk>
+              </div>
+            </div>
+            <notes :items="tnsOut.notes"></notes>
+          </div>
+          <div class="stack">
+            <code-box title="tnsnames.ora" lang="conf" :code="tnsOut.tnsEntry" file="tnsnames_entry.ora"></code-box>
+            <code-box title="Easy Connect / SQL*Plus" lang="sh" :code="tnsOut.ezc"></code-box>
+            <code-box title="JDBC Thin URL" lang="text" :code="tnsOut.jdbc" wrap></code-box>
+            <code-box title="Python (python-oracledb)" lang="py" :code="tnsOut.py"></code-box>
+            <code-box title=".NET (ODP.NET)" lang="cs" :code="tnsOut.net" wrap></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== MEMORY ===================== -->
+      <template v-if="tab === 'memory'">
+        <div class="page-head">
+          <div><h2>🧮 SGA / PGA &amp; Linux HugePages</h2>
+            <p>Oracle'ın OLTP için %80 SGA / %20 PGA, DSS için %50 / %50 başlangıç önerisine göre ASMM parametreleri, PGA_AGGREGATE_LIMIT ve HugePages ayarları.</p></div>
+          <button class="btn ghost sm" @click="resetMem">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <div class="grid g3">
+            <label class="f"><span>Sunucu RAM (GB)</span><input type="number" min="1" v-model.number="mem.ramGb"></label>
+            <label class="f"><span>Oracle'a ayrılan oran <b class="range-val">%{{ mem.oraPct }}</b></span><input type="range" min="30" max="90" step="5" v-model.number="mem.oraPct"><small>Sadece Oracle çalışıyorsa %75-80; uygulama da varsa %50 civarı.</small></label>
+            <div class="f"><span>İş yükü</span><seg full v-model="mem.workload" :options="[['oltp','OLTP (80/20)'],['dwh','DWH / DSS (50/50)']]"></seg></div>
+            <label class="f"><span>PROCESSES</span><input type="number" min="50" v-model.number="mem.processes"></label>
+            <label class="f"><span>Sunucudaki instance sayısı</span><input type="number" min="1" max="20" v-model.number="mem.instances"></label>
+            <div class="f"><span>Seçenekler</span>
+              <chk v-model="mem.hugepages"><b>Linux HugePages</b></chk>
+              <chk v-model="mem.fromAmm"><b>AMM'den geçiş</b><small>memory_target=0</small></chk></div>
+          </div>
+          <hr class="hr">
+          <div class="stats">
+            <div class="stat"><span>Instance başına Oracle</span><b>{{ (memOut.oraMB / 1024).toFixed(1) }} GB</b></div>
+            <div class="stat"><span>SGA_TARGET</span><b class="accent">{{ memOut.sgaMB }} MB</b></div>
+            <div class="stat"><span>PGA_AGGREGATE_TARGET</span><b class="ok">{{ memOut.pgaMB }} MB</b></div>
+            <div class="stat"><span>PGA_AGGREGATE_LIMIT</span><b>{{ memOut.pgaLimitMB }} MB</b></div>
+            <div class="stat" v-if="mem.hugepages"><span>vm.nr_hugepages</span><b>{{ memOut.pages }}</b><small>2 MB sayfa</small></div>
+          </div>
+          <div style="margin-top:14px">
+            <div class="bar">
+              <div :style="{ width: (memOut.sgaMB * mem.instances / (mem.ramGb * 1024) * 100) + '%', background: 'var(--accent)' }" title="SGA"></div>
+              <div :style="{ width: (memOut.pgaMB * mem.instances / (mem.ramGb * 1024) * 100) + '%', background: 'var(--ok)' }" title="PGA"></div>
+            </div>
+            <div class="legend"><span><i style="background:var(--accent)"></i>SGA</span><span><i style="background:var(--ok)"></i>PGA</span><span><i style="background:var(--border)"></i>İşletim sistemi &amp; diğer ({{ (memOut.osMB / 1024).toFixed(1) }} GB)</span></div>
+          </div>
+        </div>
+        <notes :items="memOut.notes"></notes>
+        <div class="cols">
+          <code-box title="ALTER SYSTEM komutları" :code="memOut.sql" file="oracle_memory.sql"></code-box>
+          <code-box v-if="mem.hugepages" title="Linux HugePages yapılandırması" lang="sh" :code="memOut.huge" file="hugepages.sh"></code-box>
+        </div>
+      </template>
+
+    </main>
+  </div>
+  <app-foot></app-foot>
+</div>
+<script src="../assets/common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

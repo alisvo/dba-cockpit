@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DBA Cockpit</title>
+  <meta name="description" content="Oracle, PostgreSQL ve SQL Server DBA'leri için komut üretici, teşhis sorguları ve hesaplayıcılar. Tamamen tarayıcıda çalışır, hiçbir veri sunucuya gitmez.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%238b9cf7%22/><text x=%2250%22 y=%2270%22 font-size=%2260%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Arial%22>⌘</text></svg>">
+  <script>try{var t=JSON.parse(localStorage.getItem('dbac.theme'));if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+</head>
+<body>
+<div id="app" v-cloak>
+  <app-top root=""></app-top>
+
+  <section class="hero">
+    <h1>Üç veritabanı, tek kokpit.</h1>
+    <p>Oracle, PostgreSQL ve SQL Server için yedekleme, kullanıcı, depolama, oturum yönetimi komutlarını üretin; hazır teşhis sorgularına ve bellek hesaplayıcılarına tek yerden ulaşın. Her şey tarayıcınızda çalışır.</p>
+  </section>
+
+  <section class="engines">
+    <a class="engine-card oracle" href="oracle/">
+      <h2>🔴 Oracle</h2><span class="ver">11gR2 · 12c · 19c · 21c · 23ai</span>
+      <ul>
+        <li>Data Pump parfile üretici</li>
+        <li>RMAN L0/L1/arşiv betikleri + cron</li>
+        <li>Kullanıcı, rol, CDB/PDB, tablespace</li>
+        <li>24 teşhis sorgusu (kilit, ASH, FRA, DG)</li>
+        <li>SGA/PGA + Linux HugePages</li>
+      </ul>
+      <span class="go">Oracle Cockpit'e git →</span>
+    </a>
+    <a class="engine-card postgres" href="postgres/">
+      <h2>🔵 PostgreSQL</h2><span class="ver">13 · 14 · 15 · 16 · 17</span>
+      <ul>
+        <li>pg_dump / pg_restore / pg_basebackup</li>
+        <li>Rol &amp; default privileges</li>
+        <li>CREATE DATABASE, autovacuum, VACUUM</li>
+        <li>Kilit ağacı, bloat, slot, wraparound</li>
+        <li>PGTune, pg_hba, PgBouncer</li>
+      </ul>
+      <span class="go">PostgreSQL Cockpit'e git →</span>
+    </a>
+    <a class="engine-card sqlserver" href="sqlserver/">
+      <h2>🟠 SQL Server</h2><span class="ver">2016 · 2019 · 2022 · Azure SQL MI</span>
+      <ul>
+        <li>BACKUP / RESTORE (point-in-time) / BCP</li>
+        <li>Login, user, orphan user düzeltme</li>
+        <li>Dosya, shrink, TempDB, CHECKDB</li>
+        <li>Head blocker, Query Store, job hataları</li>
+        <li>Max memory &amp; MAXDOP</li>
+      </ul>
+      <span class="go">SQL Server Cockpit'e git →</span>
+    </a>
+  </section>
+
+  <section class="section">
+    <h2>🧭 Motorlar arası karşılaştırma</h2>
+    <p>Bir motorda bildiğiniz işin diğerlerindeki karşılığı. Hücreye tıklayınca kopyalanır.</p>
+    <div class="card">
+      <div class="qlib-bar" style="margin-bottom:12px">
+        <input v-model="q" type="text" placeholder="Ara: kill, boyut, plan, yedek…" aria-label="Karşılaştırma tablosunda ara">
+        <span class="sub">{{ rows.length }} / {{ rosetta.length }} satır</span>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl rosetta">
+          <thead><tr><th>İş</th><th class="o">Oracle</th><th class="p">PostgreSQL</th><th class="s">SQL Server</th></tr></thead>
+          <tbody>
+            <tr v-for="r in rows" :key="r[0]">
+              <td>{{ r[0] }}</td>
+              <td v-for="i in [1, 2, 3]" :key="i" @click="copy(r[i], 'Kopyalandı')" style="cursor:copy" title="Kopyala"><code>{{ r[i] }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>🔒 Gizlilik</h2>
+    <p>Bu site statik HTML'dir; backend, analitik veya telemetri yoktur. Girdiğiniz host, kullanıcı ve şifreler yalnızca tarayıcı belleğinde işlenir. Form tercihleri (şifreler hariç) kolaylık için bu tarayıcının localStorage'ında tutulur; her modüldeki "Varsayılana dön" ile silinir.</p>
+  </section>
+
+  <app-foot></app-foot>
+</div>
+<script src="assets/common.js"></script>
+<script>
+  (function () {
+    const { ref, computed } = Vue;
+    const rosetta = [
+      ['Sürüm', 'SELECT banner FROM v$version;', 'SELECT version();', 'SELECT @@VERSION;'],
+      ['Mevcut kullanıcı / şema', "SELECT USER, SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM dual;", 'SELECT current_user, current_schema();', 'SELECT SUSER_SNAME(), SCHEMA_NAME();'],
+      ['Aktif oturumlar', "SELECT sid, serial#, username, status FROM v$session WHERE type = 'USER';", 'SELECT pid, usename, state, query FROM pg_stat_activity;', 'SELECT * FROM sys.dm_exec_sessions WHERE is_user_process = 1;'],
+      ['Çalışan sorguyu iptal et (oturum kalsın)', "ALTER SYSTEM CANCEL SQL 'sid,serial#';  -- 18c+", 'SELECT pg_cancel_backend(pid);', '-- Yok: istemciden iptal (Attention) veya KILL'],
+      ['Oturumu sonlandır', "ALTER SYSTEM KILL SESSION 'sid,serial#' IMMEDIATE;", 'SELECT pg_terminate_backend(pid);', 'KILL 52;'],
+      ['Kim kimi bloklıyor?', 'SELECT sid, blocking_session FROM v$session WHERE blocking_session IS NOT NULL;', 'SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;', 'SELECT session_id, blocking_session_id FROM sys.dm_exec_requests WHERE blocking_session_id <> 0;'],
+      ['Uzun süren işlem ilerlemesi', 'SELECT * FROM v$session_longops WHERE time_remaining > 0;', 'SELECT * FROM pg_stat_progress_vacuum;  -- ayrıca _create_index, _basebackup', 'SELECT session_id, command, percent_complete FROM sys.dm_exec_requests;'],
+      ['Veritabanı boyutu', 'SELECT ROUND(SUM(bytes)/1024/1024/1024, 1) AS gb FROM dba_segments;', 'SELECT pg_size_pretty(pg_database_size(current_database()));', 'EXEC sp_spaceused;'],
+      ['Tablo boyutu', "SELECT segment_name, bytes FROM dba_segments WHERE segment_name = 'EMP';", "SELECT pg_size_pretty(pg_total_relation_size('emp'));", "EXEC sp_spaceused N'dbo.Emp';"],
+      ['Çalışma planı', 'EXPLAIN PLAN FOR <sql>;  SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);', 'EXPLAIN (ANALYZE, BUFFERS) <sql>;', 'SET STATISTICS XML ON;  <sql>;'],
+      ['İstatistik topla', "EXEC DBMS_STATS.GATHER_TABLE_STATS('HR', 'EMP');", 'ANALYZE emp;', 'UPDATE STATISTICS dbo.Emp WITH FULLSCAN;'],
+      ['Parametre görüntüle', 'SHOW PARAMETER sga_target', 'SHOW shared_buffers;', "EXEC sp_configure 'max server memory (MB)';"],
+      ['Parametre değiştir', 'ALTER SYSTEM SET open_cursors = 500 SCOPE = BOTH;', "ALTER SYSTEM SET work_mem = '64MB';  SELECT pg_reload_conf();", "EXEC sp_configure 'cost threshold for parallelism', 50;  RECONFIGURE;"],
+      ['Bağlantı üst sınırı', 'SHOW PARAMETER processes', 'SHOW max_connections;', "EXEC sp_configure 'user connections';"],
+      ['Kullanıcı oluştur', 'CREATE USER app IDENTIFIED BY "Pwd_123";', "CREATE ROLE app LOGIN PASSWORD 'Pwd_123';", "CREATE LOGIN app WITH PASSWORD = N'Pwd_123';  CREATE USER app FOR LOGIN app;"],
+      ['Mantıksal yedek', 'expdp system schemas=HR directory=DATA_PUMP_DIR dumpfile=hr.dmp', 'pg_dump -Fc -f db.dump db', 'bcp dbo.Emp out emp.dat -n -T -d Db  /  SqlPackage /a:Export'],
+      ['Fiziksel yedek', 'RMAN> BACKUP DATABASE PLUS ARCHIVELOG;', 'pg_basebackup -D /backup/base -Ft -z -Xs -P', "BACKUP DATABASE [Db] TO DISK = N'D:\\b\\Db.bak' WITH COMPRESSION, CHECKSUM;"],
+      ['Log / arşiv yedeği', 'RMAN> BACKUP ARCHIVELOG ALL DELETE INPUT;', "archive_command = 'cp %p /wal_archive/%f'", "BACKUP LOG [Db] TO DISK = N'D:\\b\\Db.trn';"],
+      ['Replikasyon durumu', 'SELECT name, value FROM v$dataguard_stats;', 'SELECT * FROM pg_stat_replication;', 'SELECT * FROM sys.dm_hadr_database_replica_states;'],
+      ['Hata logu', "SELECT message_text FROM v$diag_alert_ext WHERE message_text LIKE '%ORA-%';", 'SELECT pg_current_logfile();', 'EXEC xp_readerrorlog 0, 1;'],
+      ['İlk N satır', 'SELECT * FROM emp FETCH FIRST 10 ROWS ONLY;', 'SELECT * FROM emp LIMIT 10;', 'SELECT TOP (10) * FROM dbo.Emp;'],
+      ['Şimdiki zaman', 'SELECT SYSTIMESTAMP FROM dual;', 'SELECT now();', 'SELECT SYSDATETIME();'],
+      ['Otomatik artan kimlik', 'id NUMBER GENERATED ALWAYS AS IDENTITY', 'id bigint GENERATED ALWAYS AS IDENTITY', 'id bigint IDENTITY(1,1)'],
+      ['Boş değer yerine', "NVL(col, 'x')", "COALESCE(col, 'x')", "ISNULL(col, 'x')"],
+      ['Metin birleştirme', "first_name || ' ' || last_name", "first_name || ' ' || last_name", "CONCAT(first_name, ' ', last_name)"]
+    ];
+    const norm = (s) => String(s).toLocaleLowerCase('tr');
+    DBA.mount({
+      setup() {
+        const q = ref('');
+        const rows = computed(() => { const s = norm(q.value).trim(); return s ? rosetta.filter(r => norm(r.join(' ')).includes(s)) : rosetta; });
+        return { q, rows, rosetta };
+      }
+    });
+  })();
+</script>
+</body>
+</html>
