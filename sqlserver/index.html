@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQL Server DBA Cockpit</title>
+  <meta name="description" content="SQL Server DBA'leri için backup/restore, BCP, login ve yetki, dosya ve TempDB yönetimi, oturum sonlandırma, DMV sorguları, bağlantı cümleleri ve MAXDOP/memory hesaplayıcı. Tamamen tarayıcıda çalışır.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%23d97706%22/><text x=%2250%22 y=%2268%22 font-size=%2256%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Arial%22 font-weight=%22bold%22>S</text></svg>">
+  <script>try{var t=JSON.parse(localStorage.getItem('dbac.theme'));if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+</head>
+<body data-engine="sqlserver">
+<div id="app" v-cloak>
+  <app-top engine="sqlserver"></app-top>
+  <div class="shell">
+    <side-nav :modules="modules" :current="tab" title="SQL Server · 2012 – 2022+">
+      Komutlar T-SQL, bcp, sqlcmd ve uygulama bağlantı dizgeleri için üretilir. Form değerleri yalnızca bu tarayıcıda saklanır; <b>şifreler saklanmaz</b>.
+    </side-nav>
+
+    <main class="main">
+
+      <!-- ===================== BACKUP / RESTORE / BCP ===================== -->
+      <template v-if="tab === 'backup'">
+        <div class="page-head">
+          <div><h2>📦 Backup, Restore &amp; BCP</h2>
+            <p>Tam, fark ve log yedekleri; stripe ve şifreleme. MOVE'lu ve nokta-zamanına (STOPAT) restore. bcp ile dışa ve içe aktarma.</p></div>
+          <button class="btn ghost sm" @click="resetBackupSub">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <seg full v-model="bkSub" :options="[['backup','BACKUP'],['restore','RESTORE'],['bcp','BCP']]"></seg>
+        </div>
+
+        <!-- BACKUP -->
+        <div class="cols" v-if="bkSub === 'backup'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>Veritabanı &amp; yedek tipi</h3>
+              <div class="grid">
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="bk.database"></label>
+                <div class="f"><span>Tip</span>
+                  <seg full v-model="bk.type" :options="[['FULL','FULL'],['DIFF','DIFFERENTIAL'],['LOG','LOG']]"></seg></div>
+                <label class="f span2"><span>Yedek dosyası <em>stripe ise kök ad</em> <button class="linkbtn" @click="autoBkPath">⏱ Tarih damgası ekle</button></span>
+                  <input class="mono" v-model="bk.path"></label>
+                <label class="f"><span>Stripe sayısı <em>1–8</em></span><input type="number" min="1" max="8" v-model.number="bk.stripes"></label>
+                <label class="f"><span>STATS <em>% aralığı · 0 = kapalı</em></span><input type="number" min="0" max="100" v-model.number="bk.stats"></label>
+                <label class="f span2"><span>Yedek adı (NAME) <em>boş = yok</em></span><input v-model="bk.backupName"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="bk.compression"><b>COMPRESSION</b><small>Sıkıştırma (CPU ↔ boyut)</small></chk>
+                <chk v-model="bk.checksum"><b>CHECKSUM</b><small>Sayfa sağlaması ile yedek</small></chk>
+                <chk v-model="bk.copyOnly"><b>COPY_ONLY</b><small>Log zincirini ve diff tabanını bozmaz</small></chk>
+                <chk v-model="bk.init"><b>INIT</b><small>Dosyadaki eski yedek setlerinin üzerine yaz</small></chk>
+                <chk v-model="bk.format" risky><b>FORMAT</b><small>Medya başlığını yeniden yazar</small></chk>
+                <chk v-model="bk.tuneIo"><b>BUFFERCOUNT / MAXTRANSFERSIZE</b><small>64 × 4 MB tampon</small></chk>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Şifreleme</h3>
+              <div class="checks">
+                <chk v-model="bk.encrypt"><b>ENCRYPTION</b><small>Sunucu sertifikası ile AES</small></chk>
+              </div>
+              <div class="grid" style="margin-top:12px" v-if="bk.encrypt">
+                <label class="f"><span>Algoritma</span>
+                  <select v-model="bk.encAlgo">
+                    <option value="AES_128">AES_128</option>
+                    <option value="AES_192">AES_192</option>
+                    <option value="AES_256">AES_256</option>
+                    <option value="TRIPLE_DES_3KEY">TRIPLE_DES_3KEY</option>
+                  </select></label>
+                <label class="f"><span>Sunucu sertifikası</span><input class="mono" v-model="bk.encCert"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="bkOut.notes"></notes>
+            <code-box title="BACKUP betiği" lang="sql" :code="bkOut.sql" :file="bkOut.file"></code-box>
+            <code-box title="Yedek doğrulama" lang="sql" :code="bkOut.verify" file="verify_backup.sql"></code-box>
+            <code-box title="Son yedek zamanları (msdb)" lang="sql" :code="lastBackupsSql" file="last_backups.sql"></code-box>
+          </div>
+        </div>
+
+        <!-- RESTORE -->
+        <div class="cols" v-if="bkSub === 'restore'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>Hedef &amp; kaynak</h3>
+              <div class="grid">
+                <label class="f"><span>Hedef veritabanı</span><input class="mono" v-model="rs.targetDb"></label>
+                <label class="f"><span>Yedek dosyası <em>tam yedek</em></span><input class="mono" v-model="rs.backupPath"></label>
+                <div class="f span2"><span>Kurtarma modu</span>
+                  <seg full v-model="rs.recovery" :options="[['RECOVERY','RECOVERY · kullanıma aç'],['NORECOVERY','NORECOVERY · ek yedek bekle'],['STANDBY','STANDBY · salt okunur']]"></seg></div>
+                <label class="f span2" v-if="rs.recovery === 'STANDBY'"><span>STANDBY undo dosyası</span><input class="mono" v-model="rs.standbyUndo"></label>
+                <label class="f"><span>STATS</span><input type="number" min="0" max="100" v-model.number="rs.stats"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="rs.replace" risky><b>REPLACE</b><small>Mevcut veritabanının üzerine yaz</small></chk>
+                <chk v-model="rs.checksum"><b>CHECKSUM</b><small>Yedek sayfalarını doğrula</small></chk>
+              </div>
+            </div>
+            <div class="card">
+              <h3>MOVE <em>mantıksal ad → fiziksel dosya</em></h3>
+              <div class="stack" style="gap:8px">
+                <div v-for="(m, i) in rs.moveFiles" :key="i" class="inline">
+                  <input class="mono" v-model="m.logicalName" placeholder="mantıksal ad" style="max-width:34%">
+                  <input class="mono" v-model="m.physicalPath" placeholder="D:\SQLData\dosya.mdf">
+                  <button class="btn sm ghost" @click="removeMove(i)" title="Satırı kaldır">✕</button>
+                </div>
+              </div>
+              <button class="btn sm" style="margin-top:10px" @click="addMove">+ Satır ekle</button>
+            </div>
+            <div class="card">
+              <h3>Log zinciri &amp; nokta-zamanı <em>opsiyonel</em></h3>
+              <div class="grid">
+                <label class="f span2"><span>Log yedek dosyaları <em>her satıra bir tane, sırayla</em></span>
+                  <textarea class="mono" v-model="rs.logFiles" placeholder="D:\SQLBackups\db_log_1.trn&#10;D:\SQLBackups\db_log_2.trn"></textarea></label>
+                <label class="f span2"><span>STOPAT <em>son log için · boş = tümü</em></span><input type="datetime-local" v-model="rs.stopAt"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="rsOut.notes"></notes>
+            <code-box title="RESTORE betiği" lang="sql" :code="rsOut.sql" :file="rsOut.file"></code-box>
+            <code-box title="Önce: mantıksal adlar (FILELISTONLY / HEADERONLY)" lang="sql" :code="rsHeader" file="filelistonly.sql"></code-box>
+          </div>
+        </div>
+
+        <!-- BCP -->
+        <div class="cols" v-if="bkSub === 'bcp'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>Yön &amp; biçim</h3>
+              <div class="grid">
+                <div class="f span2"><span>Yön</span>
+                  <seg full v-model="bc.direction" :options="[['out','OUT · tablo → dosya'],['queryout','QUERYOUT · sorgu → dosya'],['in','IN · dosya → tablo']]"></seg></div>
+                <div class="f"><span>Biçim</span>
+                  <seg full v-model="bc.fmt" :options="[['char','-c karakter'],['wide','-w Unicode'],['native','-n yerel']]"></seg></div>
+                <label class="f" v-if="bc.fmt === 'char'"><span>Ayraç <em>-t</em></span>
+                  <select v-model="bc.delim">
+                    <option value=",">Virgül ( , )</option>
+                    <option value="\t">Tab ( \t )</option>
+                    <option value="|">Pipe ( | )</option>
+                    <option value=";">Noktalı virgül ( ; )</option>
+                  </select></label>
+                <label class="f span2"><span>Sunucu <em>host veya host\instance</em></span><input class="mono" v-model="bc.server"></label>
+                <label class="f"><span>Veritabanı <em>-d</em></span><input class="mono" v-model="bc.database"></label>
+                <label class="f span2" v-if="bc.direction !== 'queryout'"><span>Tablo <em>şema.tablo</em></span><input class="mono" v-model="bc.table"></label>
+                <label class="f span2" v-else><span>Sorgu <em>tek satıra indirilir</em></span><textarea class="mono" v-model="bc.query"></textarea></label>
+                <label class="f span2"><span>Dosya yolu <em>hata günlüğü aynı klasöre yazılır</em></span><input class="mono" v-model="bc.filePath"></label>
+                <div class="f"><span>Kimlik doğrulama</span>
+                  <seg full v-model="bc.auth" :options="[['T','Windows (-T)'],['SQL','SQL (-U / -P)']]"></seg></div>
+                <template v-if="bc.auth === 'SQL'">
+                  <label class="f"><span>Kullanıcı <em>-U</em></span><input class="mono" v-model="bc.user"></label>
+                  <label class="f"><span>Şifre <em>-P · saklanmaz</em></span><input class="mono" type="password" v-model="bc.password" autocomplete="new-password"></label>
+                </template>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="bc.lf"><b>-r "\n"</b><small>LF satır sonu (char / wide)</small></chk>
+                <chk v-model="bc.utf8"><b>-C 65001</b><small>UTF-8 kod sayfası (yalnızca -c)</small></chk>
+                <chk v-model="bc.skipHeader"><b>-F 2</b><small>İlk satır başlık (yalnızca in)</small></chk>
+                <chk v-model="bc.keepNulls"><b>-k</b><small>NULL değerleri koru (yalnızca in)</small></chk>
+                <chk v-model="bc.keepIdentity"><b>-E</b><small>Identity değerlerini koru (yalnızca in)</small></chk>
+                <chk v-model="bc.tablock"><b>-h "TABLOCK"</b><small>Tablo kilidi (yalnızca in)</small></chk>
+              </div>
+              <div class="grid" style="margin-top:12px">
+                <label class="f"><span>Batch boyutu <em>-b · yalnızca in · 0 = yok</em></span><input type="number" min="0" v-model.number="bc.batchSize"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="bcOut.notes"></notes>
+            <code-box title="bcp komutu" lang="sh" :code="bcOut.cmd" :file="bcOut.file" wrap></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== LOGIN & YETKİ ===================== -->
+      <template v-if="tab === 'security'">
+        <div class="page-head">
+          <div><h2>👤 Login, Kullanıcı &amp; Yetki</h2>
+            <p>SQL, Windows ve Entra ID login'leri; şifre politikası ve MUST_CHANGE; sunucu rolleri; veritabanı şablonları veya ayrıntılı GRANT. Orphan kullanıcı onarımı ve güvenli silme.</p></div>
+          <button class="btn ghost sm" @click="resetSec(); regenPwd()">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Login türü</h3>
+              <seg full v-model="sec.loginType" :options="[['SQL','SQL login'],['WINDOWS','Windows (AD)'],['ENTRA','Entra ID (UPN)']]"></seg>
+              <div class="grid" style="margin-top:14px">
+                <label class="f"><span>Login adı</span><input class="mono" v-model="sec.username" placeholder="app_service_user veya DOMAIN\ad"></label>
+                <label class="f"><span>Varsayılan veritabanı</span><input class="mono" v-model="sec.database"></label>
+              </div>
+            </div>
+            <div class="card" v-if="sec.loginType === 'SQL'">
+              <h3>Şifre politikası</h3>
+              <label class="f"><span>Şifre <button class="linkbtn" @click="regenPwd">⚡ Yeni üret</button></span>
+                <div class="inline"><input class="mono" v-model="sec.password"><button class="btn sm" @click="copy(sec.password, 'Şifre kopyalandı')">Kopyala</button></div></label>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="sec.checkPolicy"><b>CHECK_POLICY</b><small>Windows parola politikası</small></chk>
+                <chk v-model="sec.checkExpiration"><b>CHECK_EXPIRATION</b><small>Şifre süresi (CHECK_POLICY açık olmalı)</small></chk>
+                <chk v-model="sec.mustChange" risky><b>MUST_CHANGE</b><small>İlk girişte değiştirsin (iki seçeneği açar)</small></chk>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Sunucu rolleri</h3>
+              <div class="checks">
+                <chk v-model="sec.roles.processadmin"><b>processadmin</b><small>Sunucu işlemlerini sonlandırma</small></chk>
+                <chk v-model="sec.roles.securityadmin"><b>securityadmin</b><small>Login ve yetki yönetimi</small></chk>
+                <chk v-model="sec.roles.dbcreator"><b>dbcreator</b><small>Veritabanı oluşturma</small></chk>
+                <chk v-model="sec.roles.sysadmin" risky><b>sysadmin</b><small>Tam yetki · dikkat</small></chk>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Veritabanı yetkileri</h3>
+              <div class="presets">
+                <button class="preset" :class="{ on: sec.preset === 'readonly' }" @click="sec.preset = 'readonly'"><b>📖 Salt okunur</b><small>db_datareader + VIEW DEFINITION</small></button>
+                <button class="preset" :class="{ on: sec.preset === 'readwrite' }" @click="sec.preset = 'readwrite'"><b>✍️ Okuma / yazma</b><small>+ db_datawriter + EXECUTE</small></button>
+                <button class="preset" :class="{ on: sec.preset === 'ddladmin' }" @click="sec.preset = 'ddladmin'"><b>🛠️ DDL yöneticisi</b><small>+ db_ddladmin</small></button>
+                <button class="preset" :class="{ on: sec.preset === 'granular' }" @click="sec.preset = 'granular'"><b>🎯 Ayrıntılı</b><small>Tek nesne veya şema üzerinde GRANT</small></button>
+              </div>
+              <div class="grid" style="margin-top:14px" v-if="sec.preset === 'granular'">
+                <label class="f"><span>Yetki</span>
+                  <select v-model="sec.granularPerm">
+                    <option value="SELECT">SELECT</option>
+                    <option value="INSERT">INSERT</option>
+                    <option value="UPDATE">UPDATE</option>
+                    <option value="DELETE">DELETE</option>
+                    <option value="EXECUTE">EXECUTE</option>
+                  </select></label>
+                <div class="f"><span>Hedef</span>
+                  <seg full v-model="sec.granularTarget" :options="[['OBJECT','OBJECT'],['SCHEMA','SCHEMA']]"></seg></div>
+                <label class="f span2"><span>Ad <em>OBJECT: şema.nesne · SCHEMA: şema adı</em></span><input class="mono" v-model="sec.granularName"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="secOut.notes"></notes>
+            <code-box title="Login, kullanıcı ve yetki betiği" lang="sql" :code="secOut.sql" :file="secOut.file"></code-box>
+            <code-box title="Orphan kullanıcılar ve onarım" lang="sql" :code="secMaint.orphan" file="orphan_users.sql"></code-box>
+            <code-box title="Güvenli silme (önce kontrol, sonra DROP)" lang="sql" :code="secMaint.drop" file="drop_login.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== STORAGE ===================== -->
+      <template v-if="tab === 'storage'">
+        <div class="page-head">
+          <div><h2>💾 Database, Dosya &amp; Depolama</h2>
+            <p>Veritabanı oluşturma, dosya ekleme, log ve veri dosyası küçültme, kurtarma modeli, TempDB yapılandırma ve bütünlük kontrolü (CHECKDB).</p></div>
+          <button class="btn ghost sm" @click="resetStorageSub">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <seg full v-model="stSub" :options="[['create_db','Yeni veritabanı'],['addfile','Dosya ekle'],['shrink','Shrink'],['recovery','Kurtarma modeli'],['tempdb','TempDB'],['checkdb','CHECKDB']]"></seg>
+        </div>
+
+        <!-- CREATE DB -->
+        <div class="cols" v-if="stSub === 'create_db'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>Yeni veritabanı</h3>
+              <div class="grid">
+                <label class="f"><span>Ad</span><input class="mono" v-model="cdb.name"></label>
+                <label class="f"><span>Sahip <em>boş = atla</em></span><input class="mono" v-model="cdb.owner"></label>
+                <label class="f span2"><span>Veri klasörü</span><input class="mono" v-model="cdb.dataPath"></label>
+                <label class="f span2"><span>Log klasörü</span><input class="mono" v-model="cdb.logPath"></label>
+                <label class="f"><span>Veri boyutu</span><input class="mono" v-model="cdb.dataSize" placeholder="1024MB"></label>
+                <label class="f"><span>Veri büyümesi <em>sabit MB</em></span><input class="mono" v-model="cdb.dataGrowth" placeholder="256MB"></label>
+                <label class="f"><span>Log boyutu</span><input class="mono" v-model="cdb.logSize" placeholder="256MB"></label>
+                <label class="f"><span>Log büyümesi <em>sabit MB</em></span><input class="mono" v-model="cdb.logGrowth" placeholder="128MB"></label>
+                <div class="f span2"><span>Kurtarma modeli</span>
+                  <seg full v-model="cdb.recovery" :options="[['FULL','FULL'],['BULK_LOGGED','BULK_LOGGED'],['SIMPLE','SIMPLE']]"></seg></div>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="cdb.rcsi"><b>READ_COMMITTED_SNAPSHOT</b><small>Satır sürümleme ile okuma</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="cdbOut.notes"></notes>
+            <code-box title="CREATE DATABASE betiği" lang="sql" :code="cdbOut.sql" :file="cdbOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- ADD FILE -->
+        <div class="cols" v-if="stSub === 'addfile'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>Yeni dosya</h3>
+              <div class="grid">
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="afl.database"></label>
+                <div class="f"><span>Tür</span>
+                  <seg full v-model="afl.fileType" :options="[['DATA','DATA (.ndf)'],['LOG','LOG (.ldf)']]"></seg></div>
+                <label class="f" v-if="afl.fileType === 'DATA'"><span>Filegroup</span><input class="mono" v-model="afl.filegroup"></label>
+                <label class="f"><span>Mantıksal ad</span><input class="mono" v-model="afl.logicalName"></label>
+                <label class="f span2"><span>Fiziksel yol</span><input class="mono" v-model="afl.physicalPath"></label>
+                <label class="f"><span>SIZE</span><input class="mono" v-model="afl.size"></label>
+                <label class="f"><span>FILEGROWTH <em>sabit MB</em></span><input class="mono" v-model="afl.filegrowth"></label>
+                <label class="f"><span>MAXSIZE</span><input class="mono" v-model="afl.maxsize"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="aflOut.notes"></notes>
+            <code-box title="ALTER DATABASE … ADD FILE" lang="sql" :code="aflOut.sql" :file="aflOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- SHRINK -->
+        <div class="cols" v-if="stSub === 'shrink'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>Küçültme</h3>
+              <div class="grid">
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="shr.database"></label>
+                <div class="f"><span>Dosya türü</span>
+                  <seg full v-model="shr.kind" :options="[['DATA','DATA'],['LOG','LOG']]"></seg></div>
+                <label class="f span2"><span>Mantıksal dosya adı</span><input class="mono" v-model="shr.fileName"></label>
+                <div class="f span2"><span>Mod</span>
+                  <seg full v-model="shr.mode" :options="shr.kind === 'LOG' ? [['TARGET','TARGET · hedef MB'],['TRUNCATEONLY','TRUNCATEONLY']] : [['TARGET','TARGET · hedef MB'],['TRUNCATEONLY','TRUNCATEONLY'],['EMPTYFILE','EMPTYFILE · boşalt']]"></seg></div>
+                <label class="f span2" v-if="shr.mode === 'TARGET'"><span>Hedef boyut (MB)</span><input type="number" min="1" v-model.number="shr.targetSizeMb"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="shrOut.notes"></notes>
+            <code-box title="DBCC SHRINKFILE" lang="sql" :code="shrOut.sql" :file="shrOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- RECOVERY MODEL -->
+        <div class="cols" v-if="stSub === 'recovery'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>Kurtarma modeli</h3>
+              <div class="grid">
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="rec.database"></label>
+                <div class="f"><span>Model</span>
+                  <seg full v-model="rec.model" :options="[['FULL','FULL'],['BULK_LOGGED','BULK_LOGGED'],['SIMPLE','SIMPLE']]"></seg></div>
+                <label class="f span2" v-if="rec.model === 'FULL'"><span>Log zincirini başlatan FULL yedek yolu</span><input class="mono" v-model="rec.chainPath"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="recOut.notes"></notes>
+            <code-box title="Kurtarma modeli betiği" lang="sql" :code="recOut.sql" :file="recOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- TEMPDB -->
+        <div class="cols" v-if="stSub === 'tempdb'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>TempDB veri dosyaları</h3>
+              <div class="grid">
+                <label class="f"><span>Mantıksal çekirdek <em>LP</em></span><input type="number" min="1" v-model.number="tdb.cores"></label>
+                <label class="f"><span>Toplam hedef boyut (MB)</span><input type="number" min="8" v-model.number="tdb.targetMb"></label>
+                <label class="f"><span>Dosya büyümesi (MB)</span><input type="number" min="1" v-model.number="tdb.growthMb"></label>
+                <label class="f"><span>Veri klasörü</span><input class="mono" v-model="tdb.path"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="tdbOut.notes"></notes>
+            <code-box title="TempDB betiği" lang="sql" :code="tdbOut.sql" :file="tdbOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- CHECKDB -->
+        <div class="cols" v-if="stSub === 'checkdb'" style="margin-top:18px">
+          <div class="stack">
+            <div class="card">
+              <h3>DBCC CHECKDB</h3>
+              <div class="grid">
+                <label class="f span2"><span>Veritabanı</span><input class="mono" v-model="ckd.database"></label>
+                <label class="f"><span>MAXDOP <em>0 = yok · 2016 SP2+</em></span><input type="number" min="0" max="64" v-model.number="ckd.maxdop"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="ckd.noInfo"><b>NO_INFOMSGS</b><small>Bilgi mesajlarını gizle</small></chk>
+                <chk v-model="ckd.allErr"><b>ALL_ERRORMSGS</b><small>Tüm hataları listele</small></chk>
+                <chk v-model="ckd.physicalOnly"><b>PHYSICAL_ONLY</b><small>Hızlı; yalnızca fiziksel kontrol</small></chk>
+                <chk v-model="ckd.dataPurity"><b>DATA_PURITY</b><small>Sütun değer geçerliliği (tam kontrol)</small></chk>
+                <chk v-model="ckd.tablock"><b>TABLOCK</b><small>Latch yerine tablo kilidi</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="ckdOut.notes"></notes>
+            <code-box title="CHECKDB ve bütünlük kayıtları" lang="sql" :code="ckdOut.sql" :file="ckdOut.file"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== SESSIONS ===================== -->
+      <template v-if="tab === 'sessions'">
+        <div class="page-head">
+          <div><h2>⚡ Oturum Bulma &amp; Sonlandırma</h2>
+            <p>Önce teşhis, sonra KILL. Veritabanını tek kullanıcıya alma ve toplu sonlandırma. Toplu komutlar önce listelenir, otomatik çalıştırılmaz.</p></div>
+          <button class="btn ghost sm" @click="resetSs">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <div class="grid g3">
+            <label class="f"><span>SPID</span><input type="number" min="0" v-model.number="ss.spid"></label>
+            <label class="f"><span>Veritabanı</span><input class="mono" v-model="ss.dbTarget"></label>
+            <label class="f"><span>Boşta süre (dk) <em>toplu kill için</em></span><input type="number" min="1" v-model.number="ss.idleMins"></label>
+          </div>
+        </div>
+        <div class="cols" style="margin-top:18px">
+          <div class="stack">
+            <code-box title="1 · SPID teşhisi ve son batch" lang="sql" :code="ssOut.inspect" file="inspect_spid.sql"></code-box>
+            <code-box title="2 · KILL" lang="sql" :code="ssOut.killOne"></code-box>
+            <code-box title="3 · KILL WITH STATUSONLY (geri alma ilerlemesi)" lang="sql" :code="ssOut.statusOnly"></code-box>
+            <code-box title="4 · Veritabanı SINGLE_USER" lang="sql" :code="ssOut.single"></code-box>
+            <code-box title="5 · Veritabanı MULTI_USER" lang="sql" :code="ssOut.multi"></code-box>
+          </div>
+          <div class="stack">
+            <notes :items="ssOut.notes"></notes>
+            <code-box title="6 · Boşta bekleyen ve açık transaction'lı oturumlar" lang="sql" :code="ssOut.killSleeping" file="kill_idle_tran.sql"></code-box>
+            <code-box title="7 · Veritabanındaki tüm kullanıcı oturumları" lang="sql" :code="ssOut.killDb" file="kill_db_sessions.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== DMV ===================== -->
+      <template v-if="tab === 'dmv'">
+        <div class="page-head">
+          <div><h2>🔍 DMV Sorguları &amp; Acil Durum Deposu</h2>
+            <p>Kilit, performans, indeks, alan, yedek, Always On ve sunucu teşhisi için {{ queries.length }} hazır sorgu. Her biri kopyalanabilir ve yorumludur.</p></div>
+        </div>
+        <query-lib :queries="queries" :cats="qcats"></query-lib>
+
+        <div class="card" style="margin-top:18px">
+          <h3>📋 Hızlı başvuru</h3>
+          <code-box title="En sık kullanılan DBCC komutları" lang="sql" :code="cheatDbcc" file="dbcc_cheatsheet.sql"></code-box>
+          <div class="tbl-wrap" style="margin-top:14px">
+            <table class="tbl">
+              <thead>
+                <tr><th>Seviye</th><th>Dirty read</th><th>Non-repeatable read</th><th>Phantom read</th><th>Mekanizma</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="mono">READ UNCOMMITTED</td><td>Oluşur (NOLOCK)</td><td>Oluşur</td><td>Oluşur</td><td>Paylaşımlı kilit almaz</td></tr>
+                <tr><td class="mono">READ COMMITTED (varsayılan)</td><td>Engellenir</td><td>Oluşur</td><td>Oluşur</td><td>Kısa süreli paylaşımlı kilit</td></tr>
+                <tr><td class="mono">SNAPSHOT / RCSI</td><td>Engellenir</td><td>Engellenir</td><td>Engellenir</td><td>tempdb satır sürümleme (okuma yazmayı kilitlemez)</td></tr>
+                <tr><td class="mono">SERIALIZABLE</td><td>Engellenir</td><td>Engellenir</td><td>Engellenir</td><td>Aralık (range) kilitleri, en yüksek kilitlenme</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="margin-top:14px">
+            <code-box title="Always On manuel failover" lang="sql" :code="cheatAg" file="ag_failover.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== CONNECTION ===================== -->
+      <template v-if="tab === 'connection'">
+        <div class="page-head">
+          <div><h2>🌐 Bağlantı Cümleleri</h2>
+            <p>ADO.NET, sqlcmd, JDBC, ODBC / pyodbc, pymssql, Node.js, PowerShell ve appsettings.json. Kimlik doğrulama tipine göre dizge üretilir.</p></div>
+          <button class="btn ghost sm" @click="resetCn">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Sunucu</h3>
+              <div class="grid">
+                <label class="f span2"><span>Host</span><input class="mono" v-model="cn.host"></label>
+                <label class="f"><span>Port</span><input class="mono" type="number" min="1" max="65535" v-model.number="cn.port"></label>
+                <label class="f"><span>Instance <em>boş = varsayılan</em></span><input class="mono" v-model="cn.instance"></label>
+                <label class="f span2"><span>Veritabanı</span><input class="mono" v-model="cn.database"></label>
+                <label class="f span2"><span>Uygulama adı</span><input class="mono" v-model="cn.appName"></label>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Kimlik doğrulama</h3>
+              <seg full v-model="cn.authType" :options="[['SQL','SQL login'],['WINDOWS','Windows (entegre)'],['AZURE_MFA','Entra MFA (etkileşimli)']]"></seg>
+              <div class="grid" style="margin-top:14px" v-if="cn.authType !== 'WINDOWS'">
+                <label class="f"><span>Kullanıcı</span><input class="mono" v-model="cn.user"></label>
+                <label class="f" v-if="cn.authType === 'SQL'"><span>Şifre <em>saklanmaz · yer tutucu</em></span><input class="mono" type="password" v-model="cn.password" autocomplete="new-password"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="cn.encrypt"><b>Encrypt</b><small>TLS ile şifreli bağlantı</small></chk>
+                <chk v-model="cn.trustServerCert" risky><b>TrustServerCertificate</b><small>Sertifika doğrulamasını kapatır (yalnızca test)</small></chk>
+                <chk v-model="cn.readOnlyIntent"><b>ApplicationIntent=ReadOnly</b><small>AG okunabilir ikincil replika</small></chk>
+                <chk v-model="cn.multiSubnet"><b>MultiSubnetFailover</b><small>AG dinleyicisi, çoklu subnet</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <div class="card">
+              <label class="f"><span>Çıktı biçimi</span>
+                <select v-model="cn.format">
+                  <option value="adonet">ADO.NET / C#</option>
+                  <option value="sqlcmd">SQLCMD CLI</option>
+                  <option value="jdbc">Java / JDBC</option>
+                  <option value="pyodbc">ODBC / Python (pyodbc)</option>
+                  <option value="pymssql">Python (pymssql)</option>
+                  <option value="nodejs">Node.js (mssql)</option>
+                  <option value="powershell">PowerShell</option>
+                  <option value="appsettings">appsettings.json</option>
+                </select></label>
+            </div>
+            <notes :items="cnOut.notes"></notes>
+            <code-box :title="cnOut.title" :lang="cnOut.lang" :code="cnOut.code" :file="cnOut.file" wrap></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== MEMORY & MAXDOP ===================== -->
+      <template v-if="tab === 'tuning'">
+        <div class="page-head">
+          <div><h2>🧮 Max Server Memory &amp; MAXDOP</h2>
+            <p>Bellek için Kehayias formülü, MAXDOP için Microsoft'un güncel NUMA kuralı. Cost threshold ve önerilen ek ayarlar betiğe eklenir.</p></div>
+          <button class="btn ghost sm" @click="resetTu">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <div class="grid g3">
+            <label class="f"><span>Sunucu RAM (GB)</span><input type="number" min="1" v-model.number="tu.ramGb"></label>
+            <label class="f"><span>Instance sayısı</span><input type="number" min="1" max="20" v-model.number="tu.instances"></label>
+            <label class="f"><span>Mantıksal işlemci (LP)</span><input type="number" min="1" v-model.number="tu.logicalCores"></label>
+            <label class="f"><span>NUMA düğümü</span><input type="number" min="1" max="64" v-model.number="tu.numaNodes"></label>
+            <label class="f"><span>Cost threshold</span><input type="number" min="0" v-model.number="tu.costThreshold"></label>
+            <div class="f"><span>İş yükü</span>
+              <seg full v-model="tu.workload" :options="[['oltp','OLTP · MAXDOP ≤ 8'],['dw','DW / Raporlama']]"></seg></div>
+          </div>
+          <div class="checks" style="margin-top:12px">
+            <chk v-model="tu.otherServices"><b>Diğer servisler</b><small>SSIS / SSRS aynı sunucuda (+4 GB)</small></chk>
+          </div>
+          <hr class="hr">
+          <div class="stats">
+            <div class="stat"><span>İşletim sistemi &amp; diğer</span><b>{{ memOut.osReserved }} GB</b></div>
+            <div class="stat"><span>max server memory</span><b class="accent">{{ memOut.sqlMaxGb }} GB</b><small>{{ memOut.sqlMaxMb }} MB</small></div>
+            <div class="stat"><span>MAXDOP</span><b class="ok">{{ dopOut.val }}</b><small>{{ dopOut.cores }} LP · {{ dopOut.nodes }} NUMA</small></div>
+          </div>
+          <div style="margin-top:14px">
+            <div class="bar">
+              <div :style="{ width: memOut.sqlPercent + '%', background: 'var(--accent)' }" title="SQL Server"></div>
+            </div>
+            <div class="legend"><span><i style="background:var(--accent)"></i>SQL Server (instance başına {{ memOut.sqlMaxGb }} GB)</span><span><i style="background:var(--border)"></i>İşletim sistemi &amp; diğer ({{ memOut.osReserved }} GB)</span></div>
+          </div>
+          <p class="sub" style="margin-top:12px"><b>MAXDOP kuralı:</b> {{ dopOut.rule }}</p>
+        </div>
+        <div class="cols" style="margin-top:18px">
+          <div class="stack">
+            <code-box title="sp_configure betiği" lang="sql" :code="tuneOut.sql" :file="tuneOut.file"></code-box>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="memOut.notes.concat(dopOut.notes)"></notes>
+          </div>
+        </div>
+      </template>
+
+    </main>
+  </div>
+  <app-foot></app-foot>
+</div>
+<script src="../assets/common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

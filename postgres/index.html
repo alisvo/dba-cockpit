@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PostgreSQL DBA Cockpit</title>
+  <meta name="description" content="PostgreSQL DBA'leri için pg_dump/pg_restore/pg_basebackup, rol ve yetki, tablespace ve autovacuum, oturum sonlandırma, teşhis sorguları, bağlantı cümleleri ve PGTune komut üretici. Tamamen tarayıcıda çalışır.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%233b82f6%22/><text x=%2250%22 y=%2268%22 font-size=%2256%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Arial%22 font-weight=%22bold%22>P</text></svg>">
+  <script>try{var t=JSON.parse(localStorage.getItem('dbac.theme'));if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+</head>
+<body data-engine="postgres">
+<div id="app" v-cloak>
+  <app-top engine="postgres"></app-top>
+  <div class="shell">
+    <side-nav :modules="modules" :current="tab" title="PostgreSQL · 13 – 17">
+      Komutlar psql, pg_* araçları ve shell için üretilir. Form değerleri yalnızca bu tarayıcıda saklanır; <b>parolalar saklanmaz</b>.
+    </side-nav>
+
+    <main class="main">
+
+      <!-- ===================== YEDEKLEME ===================== -->
+      <template v-if="tab === 'backup'">
+        <div class="page-head">
+          <div><h2>📦 pg_dump · pg_restore · pg_dumpall · pg_basebackup</h2>
+            <p>Bağlantı, format, kapsam ve bayrakları seçin. Çakışan bayraklar uyarılır ve komuttan kaldırılır; parola komuta yazılmaz.</p></div>
+          <button class="btn ghost sm" @click="resetBk">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Araç</h3>
+              <seg full v-model="bk.tool" :options="[['pg_dump','pg_dump'],['pg_restore','pg_restore'],['pg_dumpall','pg_dumpall'],['pg_basebackup','pg_basebackup']]"></seg>
+              <div class="grid" style="margin-top:14px">
+                <label class="f"><span>Host (-h)</span><input class="mono" v-model="bk.host" placeholder="127.0.0.1"></label>
+                <label class="f"><span>Port (-p)</span><input type="number" min="1" v-model.number="bk.port"></label>
+                <label class="f"><span>Kullanıcı (-U)</span><input class="mono" v-model="bk.username" placeholder="postgres"></label>
+                <label class="f" v-if="bk.tool === 'pg_dump' || bk.tool === 'pg_restore'"><span>Veritabanı (-d)</span><input class="mono" v-model="bk.database"></label>
+                <label class="f span2" v-if="bk.tool !== 'pg_basebackup'"><span>{{ bk.tool === 'pg_restore' ? 'Girdi dosyası / dizini' : 'Çıktı dosyası / dizini' }} <em v-if="bk.tool !== 'pg_restore'">boş = stdout</em></span>
+                  <input class="mono" v-model="bk.path" placeholder="/backup/production_db.dump"></label>
+                <div class="f"><span>Docker sarmalayıcı</span>
+                  <chk v-model="bk.docker"><b>docker exec -i</b><small>Komut konteyner içinde çalışır</small></chk></div>
+                <label class="f" v-if="bk.docker"><span>Konteyner adı</span><input class="mono" v-model="bk.container"></label>
+              </div>
+            </div>
+
+            <!-- pg_basebackup alanları -->
+            <div class="card" v-if="bk.tool === 'pg_basebackup'">
+              <h3>Replikasyon yedeği (pg_basebackup)</h3>
+              <div class="grid">
+                <label class="f span2"><span>Veri dizini / hedef (-D)</span><input class="mono" v-model="bk.bcDir"></label>
+                <div class="f"><span>Format (-F)</span><seg full v-model="bk.bcFormat" :options="[['p','Düz (-Fp)'],['t','Tar (-Ft)']]"></seg></div>
+                <div class="f"><span>WAL yöntemi (-X)</span><seg full v-model="bk.bcWal" :options="[['stream','stream (-Xs)'],['fetch','fetch (-Xf)']]"></seg></div>
+                <div class="f"><span>Checkpoint</span><seg full v-model="bk.bcCheckpoint" :options="[['fast','fast'],['spread','spread']]"></seg></div>
+                <label class="f"><span>Slot adı (--slot)</span><input class="mono" v-model="bk.bcSlot" placeholder="standby1"></label>
+                <label class="f"><span>Hız sınırı (--max-rate)</span><input class="mono" v-model="bk.bcRate" placeholder="50M"></label>
+                <label class="f span2"><span>Sıkıştırma</span>
+                  <select v-model="bk.bcCompress">
+                    <option value="none">Yok</option>
+                    <option value="gzip">gzip (-z)</option>
+                    <option value="lz4">lz4 (PG15+)</option>
+                    <option value="zstd">zstd (PG15+)</option>
+                  </select></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="bk.bcRecovery"><b>-R</b><small>Standby ayarını yaz</small></chk>
+                <chk v-model="bk.bcCreateSlot"><b>-C</b><small>Slot yoksa oluştur (--slot ile)</small></chk>
+                <chk v-model="bk.bcProgress"><b>-P</b><small>İlerleme göster</small></chk>
+              </div>
+            </div>
+
+            <!-- pg_dump / pg_restore / pg_dumpall -->
+            <div class="card" v-if="bk.tool !== 'pg_basebackup'">
+              <h3>Format ve kapsam</h3>
+              <div class="presets" v-if="bk.tool === 'pg_dump' || bk.tool === 'pg_restore'">
+                <button v-for="f in dumpFormats" :key="f.key" class="preset" :class="{ on: bk.format === f.key }" @click="bk.format = f.key"><b>{{ f.flag }}</b><small>{{ f.label }}</small></button>
+              </div>
+              <div style="margin-top:14px" v-if="bk.tool !== 'pg_basebackup'">
+                <span class="sub">İçerik</span>
+                <seg full v-model="bk.content" :options="[['all','Şema + veri'],['schema','Yalnızca şema (-s)'],['data','Yalnızca veri (-a)']]"></seg>
+              </div>
+              <div class="grid" style="margin-top:14px" v-if="bk.tool === 'pg_dump' || bk.tool === 'pg_restore'">
+                <label class="f"><span>Şema dahil (-n) <em>virgülle</em></span><input class="mono" v-model="bk.inSchema" placeholder="public, reporting"></label>
+                <label class="f"><span>Şema hariç (-N) <em>virgülle</em></span><input class="mono" v-model="bk.exSchema" placeholder="audit_logs"></label>
+                <label class="f"><span>Tablo dahil (-t) <em>desen</em></span><input class="mono" v-model="bk.inTable" placeholder="users, orders"></label>
+                <label class="f"><span>Tablo hariç (-T) <em>desen</em></span><input class="mono" v-model="bk.exTable" placeholder="temp_*, cache"></label>
+                <label class="f span2" v-if="bk.tool === 'pg_dump'"><span>Yalnızca yapı, verisi atlanacak (--exclude-table-data) <em>desen</em></span><input class="mono" v-model="bk.exTableData" placeholder="logs_*"></label>
+              </div>
+            </div>
+
+            <!-- Bayraklar -->
+            <div class="card" v-if="bk.tool !== 'pg_basebackup'">
+              <h3>Bayraklar</h3>
+              <label class="f" v-if="bk.tool !== 'pg_dumpall'" :style="bkCanJobs ? '' : 'opacity:.45'"><span>Paralel iş (-j) <em>{{ bk.jobs }} · yalnızca -Fd dump / -Fc,-Fd restore</em></span>
+                <input type="range" min="1" max="16" v-model.number="bk.jobs"></label>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="bk.clean"><b>-c</b><small>Nesneleri önce DROP et (--clean)</small></chk>
+                <chk v-model="bk.ifExists"><b>--if-exists</b><small>DROP öncesi IF EXISTS (-c ile)</small></chk>
+                <chk v-model="bk.noOwner"><b>-O</b><small>Sahiplik atamalarını atla</small></chk>
+                <chk v-model="bk.noPrivs"><b>-x</b><small>GRANT / REVOKE atlama</small></chk>
+                <chk v-model="bk.verbose"><b>-v</b><small>Ayrıntılı çıktı</small></chk>
+                <chk v-if="bk.tool === 'pg_dump' || bk.tool === 'pg_restore'" v-model="bk.create"><b>-C</b><small>CREATE DATABASE ekle / oluştur</small></chk>
+                <chk v-if="bk.tool === 'pg_dump'" v-model="bk.blobs"><b>-b</b><small>Büyük nesneler (-n/-t ile)</small></chk>
+                <chk v-if="bk.tool === 'pg_restore'" v-model="bk.singleTx"><b>--single-transaction</b><small>Hata olursa tümünü geri al (-j ile olmaz)</small></chk>
+                <chk v-if="bk.tool === 'pg_dumpall'" v-model="bk.globalsOnly"><b>-g</b><small>Yalnızca roller ve tablespace'ler</small></chk>
+              </div>
+              <label class="f" v-if="bk.tool === 'pg_dump'" style="margin-top:12px"><span>Sıkıştırma (-Z)</span>
+                <select v-model="bk.compression">
+                  <option value="default">Varsayılan</option>
+                  <option value="0">0 (yok)</option>
+                  <option value="9">9 (gzip)</option>
+                  <option value="lz4">lz4 (PG16+)</option>
+                  <option value="zstd">zstd (PG16+)</option>
+                </select></label>
+            </div>
+          </div>
+
+          <div class="stack sticky-col">
+            <notes :items="backupOut.notes"></notes>
+            <code-box title="Komut" lang="sh" :code="backupOut.cmd" :file="backupOut.file"></code-box>
+            <div class="card">
+              <h3>Bayrakların anlamı</h3>
+              <div class="tbl-wrap">
+                <table class="tbl"><tbody>
+                  <tr v-for="l in backupOut.legend" :key="l[0]"><td><code>{{ l[0] }}</code></td><td>{{ l[1] }}</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== ROL & KULLANICI ===================== -->
+      <template v-if="tab === 'roles'">
+        <div class="page-head">
+          <div><h2>👤 Rol &amp; Kullanıcı</h2>
+            <p>En az yetki ilkesine göre rol scripti: idempotent (tekrar çalıştırılabilir), güvenli parola ve yetki şablonları.</p></div>
+          <button class="btn ghost sm" @click="resetRoleAll">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Şablon</h3>
+              <div class="presets">
+                <button class="preset" :class="{ on: rl.preset === 'readonly' }" @click="applyRolePreset('readonly')"><b>📖 Salt okunur</b><small>Raporlama, BI, Metabase, Grafana</small></button>
+                <button class="preset" :class="{ on: rl.preset === 'app_rw' }" @click="applyRolePreset('app_rw')"><b>🚀 Uygulama (okuma-yazma)</b><small>Backend API, CRUD, sequence</small></button>
+                <button class="preset" :class="{ on: rl.preset === 'group_nologin' }" @click="applyRolePreset('group_nologin')"><b>👥 Grup rolü (NOLOGIN)</b><small>Kullanıcıları gruplayarak yetki ver</small></button>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Hesap</h3>
+              <div class="grid">
+                <label class="f"><span>Rol / kullanıcı adı</span><input class="mono" v-model="rl.name"></label>
+                <label class="f"><span>Hedef veritabanı</span><input class="mono" v-model="rl.database"></label>
+                <label class="f"><span>Hedef şema</span><input class="mono" v-model="rl.schema"></label>
+                <label class="f"><span>Nesne sahibi <em>varsayılan yetkiler için</em></span><input class="mono" v-model="rl.owner" placeholder="app_owner"></label>
+                <label class="f"><span>Bağlantı limiti <em>-1 = sınırsız</em></span><input type="number" v-model.number="rl.connLimit"></label>
+                <label class="f"><span>VALID UNTIL <em>isteğe bağlı</em></span><input class="mono" v-model="rl.validUntil" placeholder="2027-12-31"></label>
+                <label class="f span2" v-if="rl.login"><span>Parola <button class="linkbtn" @click="regenPwd()">⚡ Yeni üret</button></span>
+                  <div class="inline"><input class="mono" type="text" v-model="rl.password" autocomplete="off"><button class="btn sm" @click="copy(rl.password, 'Parola kopyalandı')">Kopyala</button></div></label>
+                <label class="f span2" v-if="rl.login"><span>Parola uzunluğu <b class="range-val">{{ rl.pwLen }}</b></span>
+                  <input type="range" min="12" max="48" v-model.number="rl.pwLen" @input="regenPwd(true)"></label>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Nitelikler (attributes)</h3>
+              <div class="checks">
+                <chk v-model="rl.login" :style="rl.preset === 'group_nologin' ? 'opacity:.5' : ''"><b>LOGIN</b><small>Giriş yapabilir (grup rolünde kapalı)</small></chk>
+                <chk v-model="rl.superuser" risky><b>SUPERUSER</b><small>Tam yetki: önerilmez</small></chk>
+                <chk v-model="rl.createdb"><b>CREATEDB</b><small>Veritabanı oluşturabilir</small></chk>
+                <chk v-model="rl.createrole" risky><b>CREATEROLE</b><small>Rol oluşturup yetki dağıtabilir</small></chk>
+                <chk v-model="rl.replication"><b>REPLICATION</b><small>Replikasyon bağlantısı</small></chk>
+                <chk v-model="rl.bypassrls" risky><b>BYPASSRLS</b><small>RLS politikalarını atlar</small></chk>
+              </div>
+              <div class="checks" style="margin-top:12px" v-if="rl.preset === 'readonly'">
+                <chk v-model="rl.useReadAll"><b>pg_read_all_data</b><small>PG14+ yerleşik okuma rolü (küme genelinde)</small></chk>
+              </div>
+              <div class="checks" style="margin-top:12px" v-if="rl.preset === 'app_rw'">
+                <chk v-model="rl.schemaCreate"><b>GRANT CREATE</b><small>Şemada tablo oluşturabilsin</small></chk>
+              </div>
+              <label class="f" style="margin-top:12px" v-if="rl.preset === 'group_nologin'"><span>Üyeler <em>virgülle</em></span>
+                <input class="mono" v-model="rl.members" placeholder="kullanici_ahmet, kullanici_mehmet"></label>
+            </div>
+          </div>
+
+          <div class="stack sticky-col">
+            <notes :items="roleOut.notes"></notes>
+            <code-box title="Rol & yetki scripti" lang="sql" :code="roleOut.sql" :file="roleOut.file"></code-box>
+            <code-box title="Rolü güvenle silme (DROP ROLE)" lang="sql" :code="roleDrop" file="drop_role.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== DB, TABLESPACE, VACUUM ===================== -->
+      <template v-if="tab === 'storage'">
+        <div class="page-head">
+          <div><h2>💾 DB, Tablespace &amp; Autovacuum</h2>
+            <p>Veritabanı oluşturma (locale ve template uyarıları), tablespace, tablo bazlı autovacuum ve manuel VACUUM / REINDEX.</p></div>
+          <button class="btn ghost sm" @click="resetStorage">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <seg full v-model="sub" :options="storageSubs"></seg>
+        </div>
+
+        <!-- CREATE DATABASE -->
+        <div class="cols" v-if="sub === 'create_db'">
+          <div class="stack">
+            <div class="card">
+              <h3>Veritabanı</h3>
+              <div class="grid">
+                <label class="f"><span>Yeni veritabanı adı</span><input class="mono" v-model="dbc.name"></label>
+                <label class="f"><span>Sahip (OWNER)</span><input class="mono" v-model="dbc.owner"></label>
+                <label class="f"><span>TEMPLATE</span>
+                  <select v-model="dbc.template"><option value="template0">template0 (önerilen)</option><option value="template1">template1</option></select></label>
+                <label class="f"><span>ENCODING</span>
+                  <select v-model="dbc.encoding"><option value="UTF8">UTF8 (önerilen)</option><option value="LATIN1">LATIN1</option><option value="SQL_ASCII">SQL_ASCII</option></select></label>
+                <div class="f span2"><span>Locale sağlayıcı</span>
+                  <seg full v-model="dbc.provider" :options="[['libc','libc (LC_COLLATE / LC_CTYPE)'],['icu','ICU (PG15+)']]"></seg></div>
+                <template v-if="dbc.provider === 'libc'">
+                  <label class="f"><span>LC_COLLATE <em>sıralama</em></span>
+                    <select v-model="dbc.collate"><option v-for="o in LOCALES" :key="o[0]" :value="o[0]">{{ o[1] }}</option></select></label>
+                  <label class="f"><span>LC_CTYPE <em>karakter sınıfı</em></span>
+                    <select v-model="dbc.ctype"><option v-for="o in LOCALES" :key="o[0]" :value="o[0]">{{ o[1] }}</option></select></label>
+                  <label class="f span2" v-if="dbc.collate === 'custom'"><span>Özel LC_COLLATE</span><input class="mono" v-model="dbc.collateCustom"></label>
+                  <label class="f span2" v-if="dbc.ctype === 'custom'"><span>Özel LC_CTYPE</span><input class="mono" v-model="dbc.ctypeCustom"></label>
+                </template>
+                <label class="f span2" v-else><span>ICU_LOCALE</span><input class="mono" v-model="dbc.icuLocale" placeholder="tr-TR"></label>
+                <label class="f"><span>Tablespace</span><input class="mono" v-model="dbc.tablespace"></label>
+                <label class="f"><span>Bağlantı limiti</span><input type="number" v-model.number="dbc.connLimit"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="dbc.revokePublic"><b>REVOKE CONNECT … FROM PUBLIC</b><small>Yalnızca açıkça yetkilendirilen roller bağlanır</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="dbOut.notes"></notes>
+            <code-box title="CREATE DATABASE" lang="sql" :code="dbOut.sql" :file="dbOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- TABLESPACE -->
+        <div class="cols" v-if="sub === 'tablespace'">
+          <div class="stack">
+            <div class="card">
+              <h3>Tablespace</h3>
+              <div class="grid">
+                <label class="f"><span>Tablespace adı</span><input class="mono" v-model="ts.name"></label>
+                <label class="f"><span>Sahip</span><input class="mono" v-model="ts.owner"></label>
+                <label class="f span2"><span>Dizin (LOCATION)</span><input class="mono" v-model="ts.location" placeholder="/mnt/fast_nvme/pg_data"></label>
+                <label class="f span2"><span>Örnek tablo <em>taşıma satırı için</em></span><input class="mono" v-model="ts.table" placeholder="public.orders"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="tsOut.notes"></notes>
+            <code-box title="Tablespace scripti" lang="sql" :code="tsOut.sql" :file="tsOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- AUTOVACUUM -->
+        <div class="cols" v-if="sub === 'autovacuum'">
+          <div class="stack">
+            <div class="card">
+              <h3>Profil</h3>
+              <div class="presets">
+                <button v-for="(p, k) in AV_PROFILES" :key="k" class="preset" :class="{ on: av.profile === k }" @click="applyAv(k)"><b>{{ p.label }}</b><small>scale {{ p.scale }} · eşik {{ p.threshold }} · cost {{ p.costLimit }}</small></button>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Tablo ve ayarlar</h3>
+              <div class="grid">
+                <label class="f"><span>Şema</span><input class="mono" v-model="av.schema"></label>
+                <label class="f"><span>Tablo</span><input class="mono" v-model="av.table"></label>
+                <label class="f span2"><span>Vacuum scale factor <b class="range-val">{{ av.scale }}</b></span>
+                  <input type="range" min="0.005" max="0.2" step="0.005" v-model.number="av.scale"></label>
+                <label class="f span2"><span>Vacuum threshold <b class="range-val">{{ av.threshold }}</b></span>
+                  <input type="range" min="100" max="10000" step="100" v-model.number="av.threshold"></label>
+                <label class="f span2"><span>Cost limit <b class="range-val">{{ av.costLimit }}</b></span>
+                  <input type="range" min="200" max="5000" step="100" v-model.number="av.costLimit"></label>
+                <template v-if="av.profile === 'append_only'">
+                  <label class="f span2"><span>Insert scale factor (PG13+) <b class="range-val">{{ av.insertScale }}</b></span>
+                    <input type="range" min="0.005" max="0.2" step="0.005" v-model.number="av.insertScale"></label>
+                  <label class="f span2"><span>Insert threshold (PG13+) <b class="range-val">{{ av.insertThreshold }}</b></span>
+                    <input type="range" min="100" max="20000" step="100" v-model.number="av.insertThreshold"></label>
+                </template>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="avOut.notes"></notes>
+            <code-box title="Tablo bazlı autovacuum" lang="sql" :code="avOut.sql" :file="avOut.file"></code-box>
+          </div>
+        </div>
+
+        <!-- BAKIM -->
+        <div class="cols" v-if="sub === 'maintenance'">
+          <div class="stack">
+            <div class="card">
+              <h3>VACUUM</h3>
+              <div class="grid">
+                <label class="f span2"><span>Hedef tablo <em>boş = tüm veritabanı</em></span><input class="mono" v-model="vc.target" placeholder="public.orders"></label>
+                <label class="f"><span>PARALLEL <em>0 = kapalı (PG13+)</em></span><input type="number" min="0" max="16" v-model.number="vc.parallel"></label>
+                <label class="f"><span>vacuumdb veritabanı</span><input class="mono" v-model="vc.vacDb"></label>
+                <label class="f"><span>vacuumdb -j</span><input type="number" min="1" max="32" v-model.number="vc.vacJobs"></label>
+                <div class="f span2"><span>INDEX_CLEANUP <em>PG14+</em></span>
+                  <seg full v-model="vc.indexCleanup" :options="[['default','Varsayılan'],['on','ON'],['off','OFF']]"></seg></div>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="vc.analyze"><b>ANALYZE</b><small>İstatistikleri güncelle</small></chk>
+                <chk v-model="vc.verbose"><b>VERBOSE</b><small>Ayrıntılı çıktı</small></chk>
+                <chk v-model="vc.freeze"><b>FREEZE</b><small>Agresif donma</small></chk>
+                <chk v-model="vc.skipLocked"><b>SKIP_LOCKED</b><small>Kilitli sayfaları atla (PG12+)</small></chk>
+                <chk v-model="vc.full" risky><b>FULL</b><small>Tabloyu yeniden yazar (ACCESS EXCLUSIVE)</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="vacOut.notes"></notes>
+            <code-box title="VACUUM" lang="sql" :code="vacOut.vac" file="vacuum.sql"></code-box>
+            <code-box title="REINDEX (CONCURRENTLY, PG12+)" lang="sql" :code="vacOut.reindex" file="reindex.sql"></code-box>
+            <code-box title="vacuumdb (pg_upgrade sonrası)" lang="sh" :code="vacOut.vdb"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== OTURUM ===================== -->
+      <template v-if="tab === 'sessions'">
+        <div class="page-head">
+          <div><h2>⚡ Oturum &amp; Kill Helper</h2>
+            <p>Kademeli sonlandırma: önce sorguyu iptal et, sonra bağlantıyı kes, en son işletim sistemi sinyali. Toplu komutlar önce listelenir.</p></div>
+          <button class="btn ghost sm" @click="resetSs">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <div class="grid g4">
+            <label class="f span2"><span>PID(ler) <em>virgülle</em></span><input class="mono" v-model="ss.pids" placeholder="24512 veya 12450, 12451"></label>
+            <label class="f"><span>Veritabanı</span><input class="mono" v-model="ss.db"></label>
+            <label class="f"><span>Boşta bekleme (dk)</span><input type="number" min="1" max="120" v-model.number="ss.idleMin"></label>
+            <label class="f"><span>Uygulama rolü <em>önleme için</em></span><input class="mono" v-model="ss.appRole"></label>
+          </div>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <code-box title="1 · PID bilgisi" :code="ssOut.lookup" file="pg_session_lookup.sql"></code-box>
+            <code-box title="2a · Sorguyu iptal et (pg_cancel_backend)" :code="ssOut.cancel"></code-box>
+            <code-box title="2b · Bağlantıyı sonlandır (pg_terminate_backend)" :code="ssOut.term"></code-box>
+            <code-box title="Toplu · veritabanındaki istemci bağlantıları" :code="ssOut.mass" file="kill_db_connections.sql"></code-box>
+          </div>
+          <div class="stack">
+            <notes :items="ssOut.notes"></notes>
+            <code-box title="3 · İşletim sistemi (son çare)" lang="sh" :code="ssOut.os"></code-box>
+            <code-box title="Idle in transaction temizleyici" :code="ssOut.idle" file="kill_idle_in_tx.sql"></code-box>
+            <code-box title="Önleme · zaman aşımları" :code="ssOut.prevent" file="idle_timeouts.sql"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== TEŞHİS SORGULARI ===================== -->
+      <template v-if="tab === 'queries'">
+        <div class="page-head">
+          <div><h2>🔍 Teşhis &amp; Acil Sorgular</h2>
+            <p>Kilit, aktivite, boyut, indeks, cache, replikasyon ve bakım için {{ queries.length }} hazır sorgu. Sürüm ve eklenti gereksinimleri her sorguda belirtilir.</p></div>
+        </div>
+        <query-lib :queries="queries" :cats="qcats"></query-lib>
+      </template>
+
+      <!-- ===================== BAĞLANTI & CONFIG ===================== -->
+      <template v-if="tab === 'connection'">
+        <div class="page-head">
+          <div><h2>🌐 Bağlantı &amp; Config Jeneratörü</h2>
+            <p>URI, psql, .pgpass, pg_hba.conf, PgBouncer, JDBC ve dil örnekleri. Kimlik bilgileri URL-kodlanır; parola ortam değişkeninden okunur.</p></div>
+          <button class="btn ghost sm" @click="resetCn">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Çıktı formatı</h3>
+              <div class="pills">
+                <button v-for="f in CONN_FORMATS" :key="f[0]" class="pill" :class="{ on: cn.format === f[0] }" @click="cn.format = f[0]">{{ f[1] }}</button>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Bağlantı</h3>
+              <div class="grid">
+                <label class="f span2"><span>Host</span><input class="mono" v-model="cn.host" placeholder="db.internal.example.com"></label>
+                <label class="f"><span>Port</span><input type="number" v-model.number="cn.port"></label>
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="cn.database"></label>
+                <label class="f"><span>Kullanıcı</span><input class="mono" v-model="cn.username"></label>
+                <label class="f"><span>Parola <em>kaydedilmez</em></span><input class="mono" type="password" v-model="cn.password" autocomplete="new-password" placeholder="boş = &lt;SIFRE&gt;"></label>
+                <label class="f"><span>sslmode</span>
+                  <select v-model="cn.sslmode">
+                    <option value="disable">disable (şifresiz / yalnızca yerel)</option>
+                    <option value="require">require (şifreli, sertifika doğrulanmaz)</option>
+                    <option value="verify-ca">verify-ca (sertifika doğrula)</option>
+                    <option value="verify-full">verify-full (sertifika + host adı)</option>
+                  </select></label>
+                <label class="f"><span>application_name</span><input class="mono" v-model="cn.appName"></label>
+              </div>
+            </div>
+            <div class="card" v-if="cn.format === 'hba' || cn.format === 'pgbouncer'">
+              <h3>{{ cn.format === 'hba' ? 'pg_hba kuralı' : 'PgBouncer' }}</h3>
+              <div class="grid" v-if="cn.format === 'hba'">
+                <label class="f"><span>İstemci adresi (CIDR)</span><input class="mono" v-model="cn.hbaCidr" placeholder="10.0.0.0/16"></label>
+                <label class="f"><span>Yöntem</span>
+                  <select v-model="cn.hbaMethod">
+                    <option value="scram-sha-256">scram-sha-256 (önerilen)</option>
+                    <option value="md5">md5 (eski)</option>
+                    <option value="trust">trust (parolasız, tehlikeli)</option>
+                    <option value="peer">peer (yalnızca local)</option>
+                  </select></label>
+              </div>
+              <div class="grid" v-if="cn.format === 'pgbouncer'">
+                <label class="f"><span>listen_addr</span><input class="mono" v-model="cn.pbListen"></label>
+                <label class="f"><span>listen_port</span><input type="number" v-model.number="cn.pbPort"></label>
+                <div class="f span2"><span>pool_mode</span>
+                  <seg full v-model="cn.poolMode" :options="[['transaction','transaction'],['session','session'],['statement','statement']]"></seg></div>
+                <label class="f"><span>max_client_conn</span><input type="number" v-model.number="cn.maxClient"></label>
+                <label class="f"><span>default_pool_size</span><input type="number" v-model.number="cn.poolSize"></label>
+                <label class="f"><span>reserve_pool_size</span><input type="number" v-model.number="cn.reservePool"></label>
+                <label class="f"><span>admin_users</span><input class="mono" v-model="cn.adminUsers"></label>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="connOut.notes"></notes>
+            <code-box title="Bağlantı çıktısı" :lang="connOut.lang" :code="connOut.code" :file="connOut.file" :wrap="cn.format === 'uri' || cn.format === 'jdbc'"></code-box>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== PGTUNE ===================== -->
+      <template v-if="tab === 'pgtune'">
+        <div class="page-head">
+          <div><h2>🧮 PGTune / Bellek Hesaplayıcı</h2>
+            <p>Donanım ve iş yüküne göre başlangıç değerleri. Restart gerektiren parametreler işaretlenir; boyutlar okunabilir biçimde yazılır.</p></div>
+          <button class="btn ghost sm" @click="resetPt">Varsayılana dön</button>
+        </div>
+        <div class="cols">
+          <div class="stack">
+            <div class="card">
+              <h3>Donanım</h3>
+              <div class="grid">
+                <label class="f span2"><span>RAM <b class="range-val">{{ pt.ramGb }} GB</b></span>
+                  <input type="range" min="1" max="512" step="1" v-model.number="pt.ramGb"></label>
+                <label class="f span2"><span>CPU çekirdeği <b class="range-val">{{ pt.cpu }}</b></span>
+                  <input type="range" min="1" max="128" step="1" v-model.number="pt.cpu"></label>
+                <label class="f span2"><span>max_connections <b class="range-val">{{ pt.maxConn }}</b></span>
+                  <input type="range" min="20" max="2000" step="10" v-model.number="pt.maxConn"></label>
+                <div class="f span2"><span>İş yükü</span>
+                  <seg full v-model="pt.workload" :options="[['web','Web (hafif OLTP)'],['oltp','OLTP'],['dw','DW / BI'],['mixed','Karma']]"></seg></div>
+                <div class="f"><span>Disk</span>
+                  <seg full v-model="pt.disk" :options="[['ssd','SSD / NVMe'],['san','SAN'],['hdd','HDD']]"></seg></div>
+                <label class="f"><span>PostgreSQL sürümü</span>
+                  <select v-model="pt.version">
+                    <option value="17">PostgreSQL 17</option>
+                    <option value="16">PostgreSQL 16</option>
+                    <option value="15">PostgreSQL 15</option>
+                    <option value="14">PostgreSQL 14</option>
+                    <option value="13">PostgreSQL 13</option>
+                  </select></label>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Sonuç</h3>
+              <div class="stats">
+                <div class="stat"><span>shared_buffers</span><b class="accent">{{ ptOut.tiles.shared }}</b></div>
+                <div class="stat"><span>effective_cache_size</span><b>{{ ptOut.tiles.cache }}</b></div>
+                <div class="stat"><span>work_mem</span><b class="ok">{{ ptOut.tiles.work }}</b></div>
+                <div class="stat"><span>maintenance_work_mem</span><b>{{ ptOut.tiles.maint }}</b></div>
+              </div>
+              <div style="margin-top:14px">
+                <div class="bar">
+                  <div :style="{ width: ptOut.sharedPct + '%', background: 'var(--accent)' }" title="shared_buffers"></div>
+                  <div :style="{ width: ptOut.cachePct + '%', background: 'var(--ok)' }" title="OS önbelleği"></div>
+                  <div :style="{ width: ptOut.restPct + '%', background: 'var(--border)' }" title="Diğer"></div>
+                </div>
+                <div class="legend">
+                  <span><i style="background:var(--accent)"></i>shared_buffers ({{ ptOut.sharedTxt }})</span>
+                  <span><i style="background:var(--ok)"></i>OS önbelleği ({{ ptOut.cacheTxt }})</span>
+                  <span><i style="background:var(--border)"></i>Diğer ({{ ptOut.restTxt }})</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="ptOut.notes"></notes>
+            <div class="card">
+              <h3>Çıktı</h3>
+              <seg full v-model="pt.mode" :options="[['conf','postgresql.conf'],['alter','ALTER SYSTEM (canlı)']]"></seg>
+            </div>
+            <code-box :title="pt.mode === 'conf' ? 'postgresql.conf' : 'ALTER SYSTEM'" lang="sql" :code="ptOut.code" :file="pt.mode === 'conf' ? 'postgresql.conf' : 'pgtune_alter.sql'"></code-box>
+          </div>
+        </div>
+      </template>
+
+    </main>
+  </div>
+  <app-foot></app-foot>
+</div>
+<script src="../assets/common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
