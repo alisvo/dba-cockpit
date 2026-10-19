@@ -3,7 +3,7 @@
 Oracle, PostgreSQL ve SQL Server DBA'leri için tek sitede toplanmış, **tamamen istemci taraflı** komut üretici ve teşhis kokpiti.
 
 - **Oracle** (`/oracle/`): Data Pump parfile, RMAN betikleri, kullanıcı & yetki (PDB / C## common), tablespace & datafile, oturum kill, 24 teşhis sorgusu, TNS / JDBC / python-oracledb, SGA / PGA / HugePages.
-- **PostgreSQL** (`/postgres/`): pg_dump / pg_restore / pg_dumpall / pg_basebackup, rol & default privileges, CREATE DATABASE, autovacuum & VACUUM, oturum yönetimi, teşhis sorguları, URI / pgpass / pg_hba / PgBouncer, PGTune.
+- **PostgreSQL** (`/postgres/`): pg_dump / pg_restore / pg_dumpall / pg_basebackup, rol & default privileges, CREATE DATABASE, autovacuum & VACUUM, oturum yönetimi, teşhis sorguları, URI / pgpass / pg_hba / PgBouncer, PGTune; **Azure Database for PostgreSQL – Flexible Server** modülü (az CLI kurulum ve bakım, sunucu parametreleri, Microsoft Entra rolleri, dahili PgBouncer) ve `azure_sys` Query Store / autonomous tuning sorguları.
 - **SQL Server** (`/sqlserver/`): BACKUP / RESTORE (point-in-time) / BCP, login & yetki, dosya / shrink / TempDB / CHECKDB, KILL helper, DMV sorguları, bağlantı cümleleri, max server memory & MAXDOP.
 - **Ana sayfa**: motorlar arası karşılaştırma tablosu (aynı işin üç motordaki karşılığı).
 

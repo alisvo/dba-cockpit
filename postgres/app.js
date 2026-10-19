@@ -10,6 +10,7 @@
     { id: 'sessions', name: 'Oturum & Kill', icon: '⚡' },
     { id: 'queries', name: 'Teşhis Sorguları', icon: '🔍' },
     { id: 'connection', name: 'Bağlantı & Config', icon: '🌐' },
+    { id: 'azure', name: 'Azure Flexible Server', icon: '☁️' },
     { id: 'pgtune', name: 'PGTune / Bellek', icon: '🧮' }
   ];
 
@@ -650,7 +651,8 @@
     ['index', '⚡ İndeks'],
     ['perf', '🧠 Cache & İstatistik'],
     ['repl', '🔄 Replikasyon & WAL'],
-    ['maint', '🧰 Vacuum & Bakım']
+    ['maint', '🧰 Vacuum & Bakım'],
+    ['azure', '☁️ Azure Flexible']
   ];
 
   const queriesA = [
@@ -907,7 +909,116 @@ SELECT num_timed, num_requested, write_time, sync_time, buffers_written FROM pg_
 SELECT checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_backend FROM pg_stat_bgwriter;` }
   ];
 
-  const queries = [...queriesA, ...queriesB];
+  // Azure Flexible Server sorguları (azure_sys şeması ve Log Analytics KQL)
+  const queriesAz = [
+    { id: 'az_qs_top', cat: 'azure', ver: 'Azure · azure_sys', title: 'Query Store: son 24 saatin en pahalı sorguları',
+      desc: 'azure_sys veritabanındaki query_store.qs_view üzerinden toplam süreye göre sorgular (sistem sorguları hariç).',
+      tip: 'Bu sorgu **azure_sys** veritabanına bağlanıp çalıştırılır. `pg_qs.query_capture_mode` = top/all olmalı.',
+      sql: `-- azure_sys veritabanına bağlanın
+SELECT q.query_id, d.datname, r.rolname,
+       sum(q.calls) AS calls,
+       round((sum(q.total_time) / 1000)::numeric, 1) AS total_s,
+       round((sum(q.total_time) / NULLIF(sum(q.calls), 0))::numeric, 2) AS mean_ms,
+       sum(q.shared_blks_read) AS blks_read,
+       sum(q.temp_blks_written) AS temp_blks_written,
+       left(max(q.query_sql_text), 150) AS query
+FROM query_store.qs_view q
+LEFT JOIN pg_database d ON d.oid = q.db_id
+LEFT JOIN pg_roles r ON r.oid = q.user_id
+WHERE q.start_time > now() - interval '24 hours'
+  AND NOT q.is_system_query
+GROUP BY q.query_id, d.datname, r.rolname
+ORDER BY total_s DESC
+LIMIT 20;` },
+    { id: 'az_qs_waits', cat: 'azure', ver: 'Azure · azure_sys', title: 'Query Store wait sampling: en çok beklenen olaylar',
+      desc: 'pgms_wait_sampling_view ile son 24 saatte örneklenen bekleme olayları ve en çok bekleyen sorgular.',
+      tip: 'Lock beklemeleri → aynı tabloyu değiştiren sık sorgular; IO → fiziksel okuması yüksek sorgular (autonomous tuning önerilerine bakın).',
+      sql: `-- azure_sys veritabanına bağlanın (pgms_wait_sampling.query_capture_mode = all)
+SELECT w.event_type, w.event, sum(w.calls) AS samples,
+       round(100.0 * sum(w.calls) / sum(sum(w.calls)) OVER (), 1) AS pct
+FROM query_store.pgms_wait_sampling_view w
+WHERE w.start_time > now() - interval '24 hours'
+GROUP BY w.event_type, w.event
+ORDER BY samples DESC
+LIMIT 20;
+
+SELECT w.query_id, w.event_type, w.event, sum(w.calls) AS samples
+FROM query_store.pgms_wait_sampling_view w
+WHERE w.start_time > now() - interval '24 hours'
+GROUP BY w.query_id, w.event_type, w.event
+ORDER BY samples DESC
+LIMIT 20;` },
+    { id: 'az_qs_plans', cat: 'azure', ver: 'Azure · azure_sys', title: 'Query Store: bir sorgunun planları ve zaman içindeki süresi',
+      desc: 'Belirli query_id için kaydedilen planlar ve 15 dakikalık pencerelerde ortalama süre; plan değişikliği (regresyon) tespiti.',
+      tip: 'Planlar için `pg_qs.store_query_plans = on` gerekir. `<QUERY_ID>` yerine ilk sorgudaki query_id değerini yazın.',
+      sql: `-- azure_sys veritabanına bağlanın
+SELECT plan_id, query_id, plan_text
+FROM query_store.query_plans_view
+WHERE query_id = <QUERY_ID>;
+
+SELECT start_time, plan_id, calls, round(mean_time::numeric, 2) AS mean_ms, rows
+FROM query_store.qs_view
+WHERE query_id = <QUERY_ID>
+ORDER BY start_time DESC
+LIMIT 50;` },
+    { id: 'az_tuning_recs', cat: 'azure', ver: 'Azure · azure_sys', title: 'Autonomous tuning önerileri (CREATE/DROP INDEX, REINDEX, ANALYZE, VACUUM)',
+      desc: 'intelligentperformance şemasındaki öneriler ve tuning oturumları.',
+      tip: 'Öneriler 35 gün sonra silinir. CREATE INDEX önerileri `CONCURRENTLY` ile gelir; yine de yoğun saat dışında ve HA/replica yükünü düşünerek uygulayın.',
+      sql: `-- azure_sys veritabanına bağlanın (index_tuning.mode = REPORT)
+SELECT recommendation_id, recommendation_type, database_name, current_state,
+       times_recommended, last_recommended_time, reason, recommendation_context
+FROM intelligentperformance.recommendations
+ORDER BY last_recommended_time DESC;
+
+SELECT session_id, database_name, session_type, state, start_time, stop_time, recommendations_count
+FROM intelligentperformance.sessions
+ORDER BY start_time DESC
+LIMIT 20;` },
+    { id: 'az_entra_principals', cat: 'azure', ver: 'Azure', title: 'Microsoft Entra ile eşlenmiş roller',
+      desc: "Hangi PostgreSQL rolü hangi Entra kullanıcı/grup/servis principal'ına bağlı; admin ve MFA bilgisi.",
+      sql: `-- postgres veritabanında
+SELECT * FROM pg_catalog.pgaadauth_list_principals(false);
+
+-- azure_pg_admin üyeleri (Flexible Server'da superuser yerine)
+SELECT m.rolname AS member
+FROM pg_auth_members am
+JOIN pg_roles g ON g.oid = am.roleid
+JOIN pg_roles m ON m.oid = am.member
+WHERE g.rolname = 'azure_pg_admin'
+ORDER BY 1;` },
+    { id: 'az_params_ext', cat: 'azure', ver: 'Azure', title: 'Azure parametreleri ve uzantı durumu',
+      desc: 'Query Store, autonomous tuning, PgBouncer, izinli uzantılar ve kurulu uzantılar.',
+      tip: 'Uzantı izin listesi (`azure.extensions`) sunucu geneldir; `CREATE EXTENSION` her veritabanında ayrı çalıştırılır.',
+      sql: `SELECT name, setting, pending_restart
+FROM pg_settings
+WHERE name LIKE 'pg_qs.%' OR name LIKE 'index_tuning.%' OR name LIKE 'pgbouncer.%'
+   OR name IN ('azure.extensions', 'shared_preload_libraries', 'require_secure_transport',
+               'default_transaction_read_only')
+ORDER BY name;
+
+SELECT name, default_version, installed_version
+FROM pg_available_extensions
+WHERE installed_version IS NOT NULL
+ORDER BY name;` },
+    { id: 'az_logs_kql', cat: 'azure', ver: 'Azure · Log Analytics', title: 'Sunucu logları: hata ve yavaş sorgular (KQL)',
+      desc: "Diagnostic settings ile Log Analytics'e gönderilen PostgreSQL loglarında hata ve süre filtreleri.",
+      tip: 'Bu bir **KQL** sorgusudur; Log Analytics çalışma alanında çalıştırın. Yavaş sorgular için `log_min_duration_statement` ayarlı olmalı.',
+      sql: `// Hatalar (Azure diagnostics şeması)
+AzureDiagnostics
+| where Category == "PostgreSQLLogs"
+| where errorLevel_s in ("ERROR", "FATAL", "PANIC")
+| project TimeGenerated, LogicalServerName_s, errorLevel_s, Message
+| order by TimeGenerated desc
+
+// Yavaş sorgular (log_min_duration_statement)
+AzureDiagnostics
+| where Category == "PostgreSQLLogs"
+| where Message contains "duration:"
+| project TimeGenerated, LogicalServerName_s, Message
+| order by TimeGenerated desc` }
+  ];
+
+  const queries = [...queriesA, ...queriesB, ...queriesAz];
 
   // ==================================================================
   // 6. BAĞLANTI & CONFIG
@@ -1210,6 +1321,308 @@ SELECT checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_backend F
   });
 
   // ==================================================================
+  // ==================================================================
+  // 8. AZURE DATABASE FOR POSTGRESQL – FLEXIBLE SERVER
+  // ==================================================================
+  const azSubs = [
+    ['provision', 'Kurulum (az CLI)'],
+    ['params', 'Sunucu parametreleri'],
+    ['entra', 'Microsoft Entra'],
+    ['pgbouncer', 'Dahili PgBouncer']
+  ];
+  const azSub = ref('provision');
+
+  const [az, resetAz] = persisted('pg.azure', {
+    rg: 'rg-db-prod', server: 'pg-prod-01', location: 'westeurope', version: '17', tier: 'GeneralPurpose',
+    sku: 'Standard_D4ds_v5', storage: 256, autoGrow: true, ha: false, zone: '1', standbyZone: '2',
+    access: 'public', allowIp: '', vnet: 'vnet-db', subnet: 'snet-pg', dnsZone: 'pg-prod-01.private.postgres.database.azure.com',
+    adminUser: 'pgadmin', backupRetention: 14, geoBackup: false, entraAuth: true, passwordAuth: true, database: 'appdb',
+    qsMode: 'top', qsWait: true, qsPlans: false, qsRetention: 7, tuning: true, bouncer: true, bouncerPoolMode: 'transaction',
+    bouncerPoolSize: 50, bouncerStatsUser: 'pgadmin', extensions: 'pg_stat_statements, pg_cron, pgaudit, hypopg', cron: true,
+    auditLog: 'ddl', slowMs: 1000, enhancedMetrics: true,
+    entraName: 'dba-group', entraType: 'group', entraAdmin: false, entraMfa: false, entraOid: ''
+  }, ['password']);
+  const resetAzAll = () => { resetAz(); DBA.toast('Azure formu varsayılana döndü'); };
+
+  // Çıktı yardımcıları: az komutu satır devamı (\), psql için çift tırnak içi kaçışı
+  const azMulti = (first, parts) => [first, ...parts].join(' \\\n  ');
+  const dq = (s) => String(s).replace(/(["\\$`])/g, '\\$1');
+
+  // --- A1: Kurulum ---
+  const azProvOut = computed(() => {
+    const a = az, notes = [];
+    const srvRaw = txt(a.server, 'pg-server');
+    const rg = sh(txt(a.rg, 'rg-postgres')), srv = sh(srvRaw);
+    const adm = sh(txt(a.adminUser, 'pgadmin')), dbN = sh(txt(a.database, 'appdb'));
+    const tier = a.tier, sku = sh(txt(a.sku, 'Standard_D4ds_v5'));
+
+    const create = [
+      '--resource-group ' + rg,
+      '--name ' + srv,
+      '--location ' + sh(txt(a.location, 'westeurope')),
+      '--version ' + sh(txt(a.version, '17')),
+      '--tier ' + sh(tier),
+      '--sku-name ' + sku,
+      '--storage-size ' + Math.max(32, int(a.storage, 32)),
+      '--storage-auto-grow ' + (a.autoGrow ? 'Enabled' : 'Disabled'),
+      '--admin-user ' + adm,
+      '--admin-password "$PGADMIN_PASSWORD"',
+      '--backup-retention ' + Math.min(35, Math.max(7, int(a.backupRetention, 14))),
+      '--geo-redundant-backup ' + (a.geoBackup ? 'Enabled' : 'Disabled'),
+      '--microsoft-entra-auth ' + (a.entraAuth ? 'Enabled' : 'Disabled'),
+      '--password-auth ' + (a.passwordAuth ? 'Enabled' : 'Disabled')
+    ];
+    if (a.ha) create.push('--zonal-resiliency Enabled', '--zone ' + sh(txt(a.zone, '1')), '--standby-zone ' + sh(txt(a.standbyZone, '2')));
+    if (a.access === 'public') create.push('--public-access ' + (txt(a.allowIp) ? sh(txt(a.allowIp)) : 'None'));
+    else create.push(
+      '--vnet ' + sh(txt(a.vnet, 'vnet-db')),
+      '--subnet ' + sh(txt(a.subnet, 'snet-pg')),
+      '--private-dns-zone ' + sh(txt(a.dnsZone, srvRaw + '.private.postgres.database.azure.com')));
+
+    const createSh = [
+      '# Şifreyi komut satırına yazmayın:',
+      'read -s PGADMIN_PASSWORD; export PGADMIN_PASSWORD',
+      '',
+      azMulti('az postgres flexible-server create', create)
+    ].join('\n');
+
+    // Firewall, bağlantı dizgesi, loglar
+    const net = [];
+    if (a.access === 'public' && txt(a.allowIp)) {
+      const ip = sh(txt(a.allowIp));
+      net.push('# Güvenlik duvarı kuralı: izinli IP (ofis)',
+        'az postgres flexible-server firewall-rule create --resource-group ' + rg + ' --server-name ' + srv +
+        ' --name allow-office --start-ip-address ' + ip + ' --end-ip-address ' + ip);
+    } else {
+      net.push('# Güvenlik duvarı kuralı yalnızca genel erişim (public) ve izinli IP girildiğinde üretilir.');
+    }
+    net.push('',
+      '# Bağlantı dizgesi (libpq / psql)',
+      'az postgres flexible-server show-connection-string --server-name ' + srv + ' --admin-user ' + adm + ' --database-name ' + dbN,
+      '',
+      '# Bağlantı dizgesi (PgBouncer üzerinden)',
+      'az postgres flexible-server show-connection-string --server-name ' + srv + ' --admin-user ' + adm + ' --database-name ' + dbN + ' --pg-bouncer',
+      '',
+      '# Sunucu logları',
+      'az postgres flexible-server server-logs list --resource-group ' + rg + ' --server-name ' + srv,
+      '',
+      '# Durum ve kapasite özeti',
+      'az postgres flexible-server show --resource-group ' + rg + ' --name ' + srv +
+      ' --query "{state:state, version:version, ha:highAvailability.mode, storageGB:storage.storageSizeGb}"');
+
+    // Bakım işlemleri
+    const nextVer = int(a.version, 17) + 1;
+    const maint = [
+      '# Katman / SKU değiştirme (kısa kesinti olabilir)',
+      'az postgres flexible-server update -g ' + rg + ' -n ' + srv + ' --sku-name ' + sku + ' --tier ' + sh(tier),
+      '',
+      '# Yüksek erişilebilirliği (zone-redundant HA) etkinleştir',
+      'az postgres flexible-server update -g ' + rg + ' -n ' + srv + ' --zonal-resiliency Enabled --standby-zone ' + sh(txt(a.standbyZone, '2')),
+      '',
+      '# Yeniden başlatma / planlı failover',
+      'az postgres flexible-server restart -g ' + rg + ' -n ' + srv + ' --failover Planned',
+      '',
+      '# Durdur / başlat',
+      'az postgres flexible-server stop -g ' + rg + ' -n ' + srv,
+      'az postgres flexible-server start -g ' + rg + ' -n ' + srv,
+      '',
+      '# Belirli bir zamana geri yükleme (yeni sunucu olarak)',
+      'az postgres flexible-server restore -g ' + rg + ' --name ' + sh(srvRaw + '-restored') + ' --source-server ' + srv + ' --restore-time "2026-01-01T10:00:00Z"',
+      '',
+      '# Okuma replikası',
+      'az postgres flexible-server replica create -g ' + rg + ' --source-server ' + srv + ' --name ' + sh(srvRaw + '-replica1'),
+      '',
+      '# Majör sürüm yükseltme: önce doğrulama (--validate-only), sonra gerçek yükseltme',
+      'az postgres flexible-server upgrade -g ' + rg + ' -n ' + srv + ' --version ' + nextVer + ' --validate-only',
+      'az postgres flexible-server upgrade -g ' + rg + ' -n ' + srv + ' --version ' + nextVer
+    ].join('\n');
+
+    notes.push(['info', 'Yeni Azure CLI sürümleri HA için `--zonal-resiliency Enabled/Disabled` kullanır; eski sürümler `--high-availability ZoneRedundant|SameZone|Disabled` kullanıyordu. `az postgres flexible-server create --help` ile kontrol edin.']);
+    if (tier === 'Burstable') notes.push(['warn', 'Burstable katmanında dahili PgBouncer desteklenmez ve **Query Store** etkinleştirilmemelidir (performans sorunları). Autonomous tuning en az 4 vCore gerektirir.']);
+    if (a.ha && tier === 'Burstable') notes.push(['warn', 'Burstable katmanında yüksek erişilebilirlik (HA) desteklenmez; HA için General Purpose veya Memory Optimized seçin.']);
+    notes.push(['info', 'Erişim modu sunucu oluşturulurken seçilir; özel erişim (VNet) sonradan genel erişime (public) çevrilemez.']);
+    notes.push(['info', 'Depolama dolduğunda sunucu **salt okunur** olur; `--storage-auto-grow Enabled` ile otomatik büyümeyi açık tutun.']);
+    notes.push(['info', 'Geri yükleme yeni bir sunucu oluşturur ve yalnızca yedek saklama süresi içindeki bir zamana (UTC) dönülebilir.']);
+    notes.push(['tip', 'Eski Azure CLI sürümleri replika oluştururken `--name` yerine `--replica-name` kullanır.']);
+    notes.push(['info', "Flexible Server'da kullanıcı adı düz yazılır (`pgadmin`); emekli edilen Single Server'daki `pgadmin@sunucu` biçimi kullanılmaz."]);
+
+    return { notes, create: createSh, net: net.join('\n'), maint };
+  });
+
+  // --- A2: Sunucu parametreleri ---
+  const azParOut = computed(() => {
+    const a = az, notes = [];
+    const rg = sh(txt(a.rg, 'rg-postgres')), srv = sh(txt(a.server, 'pg-server'));
+    const db = txt(a.database, 'appdb');
+    const retention = Math.min(30, Math.max(1, int(a.qsRetention, 7)));
+    const exts = [...new Set(list(a.extensions))];
+    const preload = ['pg_stat_statements'];
+    if (a.cron) { preload.push('pg_cron'); if (!exts.includes('pg_cron')) exts.push('pg_cron'); }
+    if (a.auditLog !== 'none') { preload.push('pgaudit'); if (!exts.includes('pgaudit')) exts.push('pgaudit'); }
+
+    const P = [
+      ['pg_qs.query_capture_mode', a.qsMode],
+      ['pg_qs.retention_period_in_days', String(retention)],
+      ['pg_qs.store_query_plans', a.qsPlans ? 'on' : 'off'],
+      ['pgms_wait_sampling.query_capture_mode', a.qsWait ? 'all' : 'none'],
+      ['index_tuning.mode', a.tuning ? 'REPORT' : 'OFF'],
+      ['pgbouncer.enabled', a.bouncer ? 'true' : 'false']
+    ];
+    if (a.bouncer) P.push(
+      ['pgbouncer.pool_mode', a.bouncerPoolMode],
+      ['pgbouncer.default_pool_size', String(Math.max(1, int(a.bouncerPoolSize, 50)))],
+      ['pgbouncer.stats_users', txt(a.bouncerStatsUser, 'pgadmin')]
+    );
+    P.push(['azure.extensions', exts.join(',')]);
+    P.push(['shared_preload_libraries', preload.join(',')]);
+    if (a.cron) P.push(['cron.database_name', db]);
+    if (a.auditLog !== 'none') P.push(['pgaudit.log', a.auditLog]);
+    P.push(['log_min_duration_statement', String(int(a.slowMs, 1000))]);
+    P.push(['metrics.collector_database_activity', a.enhancedMetrics ? 'on' : 'off']);
+
+    const cli = ['# Sunucu parametreleri (az CLI): dinamik parametreler hemen, statik olanlar restart sonrası etkinleşir.',
+      '# ÖNCE mevcut listeleri görün: parameter set değeri tamamen DEĞİŞTİRİR (eklemez).',
+      ...['azure.extensions', 'shared_preload_libraries'].map(k => 'az postgres flexible-server parameter show --resource-group ' + rg + ' --server-name ' + srv + ' --name ' + k + ' --query value -o tsv'),
+      ''];
+    P.forEach(([k, v]) => cli.push('az postgres flexible-server parameter set --resource-group ' + rg + ' --server-name ' + srv + ' --name ' + k + ' --value ' + sh(v)));
+    cli.push('', '# shared_preload_libraries ve cron.database_name statik parametrelerdir: restart gerekir',
+      'az postgres flexible-server restart --resource-group ' + rg + ' --name ' + srv);
+
+    const extSql = [];
+    exts.forEach(e => {
+      if (e === 'pg_stat_statements') return;
+      if (e === 'pg_cron') extSql.push('-- pg_cron yalnızca cron.database_name veritabanında oluşturulur (ayarlı: ' + db + ')');
+      extSql.push('CREATE EXTENSION IF NOT EXISTS ' + pgIdent(e) + ';');
+    });
+    const sqlCheck = [
+      'SELECT name, setting, pending_restart',
+      'FROM pg_settings',
+      "WHERE name LIKE 'pg_qs.%' OR name LIKE 'pgms_wait_sampling.%' OR name LIKE 'index_tuning.%'",
+      "   OR name LIKE 'pgbouncer.%' OR name LIKE 'pgaudit.%' OR name LIKE 'cron.%'",
+      "   OR name IN ('azure.extensions', 'shared_preload_libraries', 'require_secure_transport',",
+      "               'log_min_duration_statement', 'default_transaction_read_only')",
+      'ORDER BY name;',
+      '',
+      '-- İzin listesindeki uzantıyı veritabanında oluşturun (her veritabanında ayrı):',
+      'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;',
+      ...extSql
+    ].join('\n');
+
+    if (a.qsWait && a.qsMode === 'none') notes.push(['warn', 'Wait sampling için Query Store açık olmalıdır: `pg_qs.query_capture_mode` = `none` iken **pgms_wait_sampling** veri üretmez. Modu `top` veya `all` yapın.']);
+    if (a.tuning && a.qsMode === 'none') notes.push(['warn', 'Autonomous tuning (`index_tuning.mode`) Query Store verisine dayanır; `pg_qs.query_capture_mode` değerini `top` veya `all` yapın.']);
+    if (a.tuning && a.tier === 'Burstable') notes.push(['warn', 'Autonomous tuning en az 4 vCore gerektirir; Burstable katmanında kullanılmamalıdır.']);
+    if (a.qsMode !== 'none' && a.tier === 'Burstable') notes.push(['warn', 'Burstable katmanında **Query Store** etkinleştirilmemelidir; performans sorunlarına yol açar.']);
+    if (a.bouncer && a.tier === 'Burstable') notes.push(['warn', 'Burstable katmanında dahili PgBouncer yoktur; `pgbouncer.enabled` değerini `false` bırakın.']);
+    if (!exts.includes('pg_stat_statements')) notes.push(['warn', '`pg_stat_statements` izin listesinde yok; `CREATE EXTENSION` bu uzantı için hata verir. Listeye ekleyin.']);
+    notes.push(['warn', '`shared_preload_libraries` ve `cron.database_name` **statik** parametrelerdir; değişiklik için `az postgres flexible-server restart` gerekir (kısa kesinti).']);
+    notes.push(['danger', '`azure.extensions` ve `shared_preload_libraries` için `parameter set` mevcut listeyi **değiştirir**. Sunucuda zaten açık olan uzantı/kütüphaneleri (`parameter show` çıktısı) listeye eklemezseniz devre dışı kalırlar.']);
+    notes.push(['info', 'Query Store verisi `azure_sys` veritabanında tutulur; ilk veri ~20 dakika içinde görünür.']);
+    notes.push(['info', 'Uzantı önce `azure.extensions` izin listesine eklenmeli, yoksa CREATE EXTENSION hata verir.']);
+    notes.push(['tip', '`require_secure_transport` varsayılan ON: istemciler `sslmode=require` (veya daha sıkı) kullanmalı.']);
+    notes.push(['info', "Flexible Server'da superuser yoktur; yönetici rolü `azure_pg_admin` üyesidir."]);
+
+    return { notes, cli: cli.join('\n'), sql: sqlCheck };
+  });
+
+  // --- A3: Microsoft Entra ---
+  const azEntraOut = computed(() => {
+    const a = az, notes = [];
+    const name = txt(a.entraName, 'dba-group'), type = a.entraType || 'group';
+    const N = pgIdent(name), NL = pgLit(name);
+    const DB = pgIdent(txt(a.database, 'appdb'));
+    const oid = txt(a.entraOid), admin = !!a.entraAdmin, mfa = !!a.entraMfa;
+    const B = (b) => (b ? 'true' : 'false');
+    const create = oid
+      ? `SELECT * FROM pg_catalog.pgaadauth_create_principal_with_oid(${NL}, ${pgLit(oid)}, ${pgLit(type)}, ${B(admin)}, ${B(mfa)});`
+      : `SELECT * FROM pg_catalog.pgaadauth_create_principal(${NL}, ${B(admin)}, ${B(mfa)});`;
+    const label = 'aadauth,oid=' + (oid || '<objectId>') + ',type=' + type + (admin ? ',admin' : '');
+
+    const role = [
+      '-- postgres veritabanında, Entra yönetici oturumuyla çalıştırın',
+      create,
+      '',
+      '-- Mevcut Entra rolleri',
+      'SELECT * FROM pg_catalog.pgaadauth_list_principals(false);',
+      '',
+      '-- Yetkiler',
+      'GRANT CONNECT ON DATABASE ' + DB + ' TO ' + N + ';',
+      '-- Şema ve tablo yetkileri için Rol & Kullanıcı modülündeki GRANT satırlarını uygulayın (ör. GRANT USAGE ON SCHEMA public TO ...)',
+      '',
+      "-- Var olan bir rolü Entra'ya bağlamak:",
+      '-- SECURITY LABEL for "pgaadauth" on role "' + name + '" is ' + pgLit(label) + ';',
+      '',
+      '-- Silmek: DROP ROLE ' + N + ';'
+    ].join('\n');
+
+    const lib = 'host=' + txt(a.server, 'pg-server') + '.postgres.database.azure.com port=5432 dbname=' +
+      kvq(txt(a.database, 'appdb')) + ' user=' + kvq(name) + ' sslmode=require';
+    const login = [
+      'az login',
+      'export PGPASSWORD="$(az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv)"',
+      'psql "' + dq(lib) + '"'
+    ].join('\n');
+
+    notes.push(['info', 'İlk Entra yöneticisi portal veya ARM API ile atanır; SQL fonksiyonlarını yalnızca Entra admin rolü çalıştırabilir.']);
+    notes.push(['info', 'Kullanıcılar için rol adı UPN olmalı (`ad.soyad@sirket.com`); grup ve servis principal için görünen ad (display name) kullanılır.']);
+    if (!oid) notes.push(['info', "Object ID boş: principal Entra'da **görünen ad** ile aranır. Aynı adlı birden fazla nesne varsa Object ID girerek belirsizliği önleyin."]);
+    notes.push(['tip', 'Token ~1 saat geçerlidir; uzun süren işlerde yenileyin.']);
+    if (mfa) notes.push(['info', '`isMfa` yalnızca token içindeki `mfa` talebini kontrol eder; MFA zorunluluğunu Entra Koşullu Erişim (Conditional Access) politikasıyla sağlayın.']);
+    if (admin) notes.push(['warn', 'Yönetici (admin) işaretli principal yönetici yetkisi alır (`azure_pg_admin` üyeliği); yalnızca gerekli kimliklere verin.']);
+
+    return { notes, role, login };
+  });
+
+  // --- A4: Dahili PgBouncer ---
+  const azPbOut = computed(() => {
+    const a = az, notes = [];
+    const srvRaw = txt(a.server, 'pg-server'), db = txt(a.database, 'appdb');
+    const adm = txt(a.adminUser, 'pgadmin'), stats = txt(a.bouncerStatsUser, 'pgadmin');
+    const host = srvRaw + '.postgres.database.azure.com';
+
+    const conn = [
+      '# Uygulama bağlantısı: aynı host, port 6432',
+      'psql "' + dq('host=' + host + ' port=6432 dbname=' + kvq(db) + ' user=' + kvq(adm) + ' sslmode=require') + '"',
+      '',
+      '# Yönetim konsolu (pgbouncer.stats_users içindeki kullanıcı ile)',
+      'psql "' + dq('host=' + host + ' port=6432 dbname=pgbouncer user=' + kvq(stats) + ' sslmode=require') + '"'
+    ].join('\n');
+
+    const admin = [
+      '-- Kullanılabilir yönetim komutları',
+      'SHOW HELP;',
+      '',
+      '-- Havuz durumu: istemci ve sunucu bağlantıları (cl_active, sv_active, sv_idle, ...)',
+      'SHOW POOLS;',
+      '',
+      '-- Veritabanı başına havuz ayarları',
+      'SHOW DATABASES;',
+      '',
+      '-- Sorgu ve trafik istatistikleri',
+      'SHOW STATS;'
+    ].join('\n');
+
+    const kql = [
+      '// PgBouncer logları (resource-specific şema)',
+      'PGSQLPgBouncer',
+      '| where _ResourceId contains "' + srvRaw + '"',
+      '| order by TimeGenerated desc',
+      '',
+      '// Azure diagnostics şeması',
+      'AzureDiagnostics',
+      '| where Category == "PostgreSQLFlexPGBouncer"',
+      '| order by TimeGenerated desc'
+    ].join('\n');
+
+    notes.push(['warn', 'Burstable katmanında dahili PgBouncer yoktur.']);
+    if (!a.bouncer) notes.push(['danger', '`pgbouncer.enabled` kapalı: 6432 portu çalışmaz. **Sunucu parametreleri** sekmesinden etkinleştirin.']);
+    notes.push(['info', "Varsayılan `pool_mode` `transaction`; session seviyesindeki SET, advisory lock, LISTEN/NOTIFY transaction'lar arasında korunmaz. Protokol seviyesinde prepared statement için `pgbouncer.max_prepared_statements` > 0 yapın."]);
+    notes.push(['info', 'Ölçümler için `metrics.pgbouncer_diagnostics` parametresini açın.']);
+    notes.push(['info', "HA failover sonrası PgBouncer yeni primary'de otomatik başlar, bağlantı dizgesi değişmez."]);
+
+    return { notes, conn, admin, kql };
+  });
+
+  // ==================================================================
   // Uygulama kökü
   // ==================================================================
   DBA.mount({
@@ -1227,7 +1640,8 @@ SELECT checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_backend F
         ss, resetSs, ssOut,
         queries, qcats,
         CONN_FORMATS, cn, resetCn, connOut,
-        pt, resetPt, ptOut
+        pt, resetPt, ptOut,
+        azSubs, azSub, az, resetAzAll, azProvOut, azParOut, azEntraOut, azPbOut
       };
     }
   });

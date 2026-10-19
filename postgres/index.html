@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="../assets/style.css?v=20261019">
   <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
 </head>
 <body data-engine="postgres">
@@ -434,6 +434,188 @@
         </div>
       </template>
 
+      <!-- ===================== AZURE FLEXIBLE SERVER ===================== -->
+      <template v-if="tab === 'azure'">
+        <div class="page-head">
+          <div><h2>☁️ Azure Database for PostgreSQL – Flexible Server</h2>
+            <p>Azure'a özel kurulum (az CLI), sunucu parametreleri, Microsoft Entra kimlik doğrulama ve dahili PgBouncer.</p></div>
+          <button class="btn ghost sm" @click="resetAzAll">Varsayılana dön</button>
+        </div>
+        <div class="card">
+          <seg full v-model="azSub" :options="azSubs"></seg>
+        </div>
+
+        <!-- KURULUM (az CLI) -->
+        <div class="cols" v-if="azSub === 'provision'">
+          <div class="stack">
+            <div class="card">
+              <h3>Sunucu</h3>
+              <div class="grid">
+                <label class="f"><span>Kaynak grubu <em>--resource-group</em></span><input class="mono" v-model="az.rg"></label>
+                <label class="f"><span>Sunucu adı <em>--name</em></span><input class="mono" v-model="az.server"></label>
+                <label class="f"><span>Bölge <em>--location</em></span><input class="mono" v-model="az.location" placeholder="westeurope"></label>
+                <label class="f"><span>PostgreSQL sürümü <em>--version</em></span>
+                  <select v-model="az.version">
+                    <option value="17">PostgreSQL 17</option>
+                    <option value="16">PostgreSQL 16</option>
+                    <option value="15">PostgreSQL 15</option>
+                    <option value="14">PostgreSQL 14</option>
+                  </select></label>
+                <label class="f"><span>Katman <em>--tier</em></span>
+                  <select v-model="az.tier">
+                    <option value="Burstable">Burstable</option>
+                    <option value="GeneralPurpose">General Purpose</option>
+                    <option value="MemoryOptimized">Memory Optimized</option>
+                  </select></label>
+                <label class="f"><span>SKU <em>--sku-name</em></span><input class="mono" v-model="az.sku"></label>
+                <label class="f"><span>Depolama (GB) <em>--storage-size</em></span><input type="number" min="32" v-model.number="az.storage"></label>
+                <label class="f"><span>Yönetici kullanıcı <em>--admin-user</em></span><input class="mono" v-model="az.adminUser"></label>
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="az.database"></label>
+                <label class="f"><span>Yedek saklama (gün) <em>7-35</em></span><input type="number" min="7" max="35" v-model.number="az.backupRetention"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="az.autoGrow"><b>Depolama otomatik büyüsün</b><small>--storage-auto-grow</small></chk>
+                <chk v-model="az.geoBackup"><b>Coğrafi yedek</b><small>--geo-redundant-backup</small></chk>
+                <chk v-model="az.entraAuth"><b>Microsoft Entra kimlik doğrulama</b><small>--microsoft-entra-auth</small></chk>
+                <chk v-model="az.passwordAuth"><b>Parola ile kimlik doğrulama</b><small>--password-auth</small></chk>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Yüksek erişilebilirlik ve ağ</h3>
+              <div class="checks">
+                <chk v-model="az.ha"><b>Zone-redundant HA</b><small>--zonal-resiliency Enabled</small></chk>
+              </div>
+              <div class="grid" style="margin-top:12px">
+                <label class="f" v-if="az.ha"><span>Birincil zone <em>--zone</em></span><input class="mono" v-model="az.zone"></label>
+                <label class="f" v-if="az.ha"><span>Standby zone <em>--standby-zone</em></span><input class="mono" v-model="az.standbyZone"></label>
+                <div class="f span2"><span>Erişim modu</span>
+                  <seg full v-model="az.access" :options="[['public','Genel (public)'],['private','Özel (VNet)']]"></seg></div>
+                <label class="f span2" v-if="az.access === 'public'"><span>İzinli IP <em>boş = yok</em></span><input class="mono" v-model="az.allowIp" placeholder="203.0.113.10"></label>
+                <template v-if="az.access === 'private'">
+                  <label class="f"><span>VNet <em>--vnet</em></span><input class="mono" v-model="az.vnet"></label>
+                  <label class="f"><span>Subnet <em>--subnet</em></span><input class="mono" v-model="az.subnet"></label>
+                  <label class="f span2"><span>Private DNS zone <em>--private-dns-zone</em></span><input class="mono" v-model="az.dnsZone"></label>
+                </template>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="azProvOut.notes"></notes>
+            <code-box title="1 · Sunucu oluştur" lang="sh" :code="azProvOut.create" file="azure_create_server.sh"></code-box>
+            <code-box title="2 · Firewall, bağlantı ve izleme" lang="sh" :code="azProvOut.net" file="azure_network_monitor.sh"></code-box>
+            <code-box title="3 · Bakım işlemleri" lang="sh" :code="azProvOut.maint" file="azure_maintenance.sh"></code-box>
+          </div>
+        </div>
+
+        <!-- SUNUCU PARAMETRELERİ -->
+        <div class="cols" v-if="azSub === 'params'">
+          <div class="stack">
+            <div class="card">
+              <h3>Query Store ve sorgu izleme</h3>
+              <div class="grid">
+                <label class="f"><span>pg_qs.query_capture_mode</span>
+                  <select v-model="az.qsMode">
+                    <option value="none">none (kapalı)</option>
+                    <option value="top">top (üst düzey sorgular)</option>
+                    <option value="all">all (iç içe dahil)</option>
+                  </select></label>
+                <label class="f"><span>Saklama süresi (gün) <em>1-30</em></span><input type="number" min="1" max="30" v-model.number="az.qsRetention"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="az.qsWait"><b>Wait sampling</b><small>pgms_wait_sampling.query_capture_mode = all</small></chk>
+                <chk v-model="az.qsPlans"><b>Sorgu planlarını sakla</b><small>pg_qs.store_query_plans</small></chk>
+                <chk v-model="az.tuning"><b>Autonomous tuning (rapor)</b><small>index_tuning.mode = report</small></chk>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Dahili PgBouncer</h3>
+              <div class="checks">
+                <chk v-model="az.bouncer"><b>pgbouncer.enabled</b><small>Havuzlayıcı 6432 portu üzerinden</small></chk>
+              </div>
+              <div class="grid" style="margin-top:12px" v-if="az.bouncer">
+                <label class="f"><span>Havuz modu <em>pgbouncer.pool_mode</em></span>
+                  <select v-model="az.bouncerPoolMode">
+                    <option value="transaction">transaction</option>
+                    <option value="session">session</option>
+                    <option value="statement">statement</option>
+                  </select></label>
+                <label class="f"><span>Havuz boyutu <em>default_pool_size</em></span><input type="number" min="1" v-model.number="az.bouncerPoolSize"></label>
+                <label class="f span2"><span>İstatistik kullanıcısı <em>pgbouncer.stats_users</em></span><input class="mono" v-model="az.bouncerStatsUser"></label>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Uzantılar, loglama ve metrikler</h3>
+              <div class="grid">
+                <label class="f span2"><span>İzinli uzantılar <em>azure.extensions · virgülle</em></span><input class="mono" v-model="az.extensions"></label>
+                <label class="f"><span>Denetim logu <em>pgaudit.log</em></span>
+                  <select v-model="az.auditLog">
+                    <option value="none">none (kapalı)</option>
+                    <option value="ddl">ddl</option>
+                    <option value="write">write</option>
+                    <option value="all">all</option>
+                  </select></label>
+                <label class="f"><span>Yavaş sorgu eşiği (ms) <em>log_min_duration_statement</em></span><input type="number" min="-1" v-model.number="az.slowMs"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="az.cron"><b>pg_cron</b><small>cron.database_name = veritabanı</small></chk>
+                <chk v-model="az.enhancedMetrics"><b>Gelişmiş metrikler</b><small>metrics.collector_database_activity</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="azParOut.notes"></notes>
+            <code-box title="az CLI ile parametreler" lang="sh" :code="azParOut.cli" file="azure_parameters.sh"></code-box>
+            <code-box title="SQL ile kontrol" lang="sql" :code="azParOut.sql" file="azure_check.sql"></code-box>
+          </div>
+        </div>
+
+        <!-- MICROSOFT ENTRA -->
+        <div class="cols" v-if="azSub === 'entra'">
+          <div class="stack">
+            <div class="card">
+              <h3>Entra principal</h3>
+              <div class="grid">
+                <label class="f"><span>Görünen ad / UPN <em>rol adı</em></span><input class="mono" v-model="az.entraName"></label>
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="az.database"></label>
+                <div class="f span2"><span>Principal türü</span>
+                  <seg full v-model="az.entraType" :options="[['user','Kullanıcı'],['group','Grup'],['service','Servis']]"></seg></div>
+                <label class="f span2"><span>Object ID <em>isteğe bağlı</em></span><input class="mono" v-model="az.entraOid" placeholder="00000000-0000-0000-0000-000000000000"></label>
+              </div>
+              <div class="checks" style="margin-top:12px">
+                <chk v-model="az.entraAdmin" risky><b>Yönetici (admin)</b><small>is_admin: azure_pg_admin üyeliği</small></chk>
+                <chk v-model="az.entraMfa"><b>MFA zorunlu</b><small>is_mfa: token içinde mfa talebi</small></chk>
+              </div>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="azEntraOut.notes"></notes>
+            <code-box title="Entra rolü oluştur (postgres veritabanında, Entra admin ile)" lang="sql" :code="azEntraOut.role" file="azure_entra_roles.sql"></code-box>
+            <code-box title="Token ile bağlan" lang="sh" :code="azEntraOut.login" file="azure_entra_connect.sh"></code-box>
+          </div>
+        </div>
+
+        <!-- DAHİLİ PGBOUNCER -->
+        <div class="cols" v-if="azSub === 'pgbouncer'">
+          <div class="stack">
+            <div class="card">
+              <h3>Bağlantı bilgileri</h3>
+              <div class="grid">
+                <label class="f"><span>Veritabanı</span><input class="mono" v-model="az.database"></label>
+                <label class="f"><span>Yönetici kullanıcı</span><input class="mono" v-model="az.adminUser"></label>
+                <label class="f span2"><span>Konsol kullanıcısı <em>pgbouncer.stats_users</em></span><input class="mono" v-model="az.bouncerStatsUser"></label>
+              </div>
+              <p class="sub" style="margin-top:12px">Dahili PgBouncer'ı açmak, havuz modu ve boyutunu ayarlamak için <b>Sunucu parametreleri</b> sekmesini kullanın.</p>
+            </div>
+          </div>
+          <div class="stack sticky-col">
+            <notes :items="azPbOut.notes"></notes>
+            <code-box title="Uygulama ve konsol bağlantısı" lang="sh" :code="azPbOut.conn" file="azure_pgbouncer_connect.sh"></code-box>
+            <code-box title="Konsol komutları" lang="sql" :code="azPbOut.admin" file="azure_pgbouncer_console.sql"></code-box>
+            <code-box title="Log Analytics (KQL)" lang="text" :code="azPbOut.kql" file="azure_pgbouncer_logs.kql"></code-box>
+          </div>
+        </div>
+      </template>
+
       <!-- ===================== PGTUNE ===================== -->
       <template v-if="tab === 'pgtune'">
         <div class="page-head">
@@ -503,7 +685,7 @@
   </div>
   <app-foot></app-foot>
 </div>
-<script src="../assets/common.js"></script>
-<script src="app.js"></script>
+<script src="../assets/common.js?v=20261019"></script>
+<script src="app.js?v=20261019"></script>
 </body>
 </html>

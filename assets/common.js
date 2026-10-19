@@ -341,7 +341,7 @@
     setup() { return { md }; },
     template: `
       <div class="notes" v-if="items && items.length">
-        <div v-for="(n, i) in items" :key="i" class="note" :class="n[0]" v-html="md(n[1])"></div>
+        <div v-for="(n, i) in items" :key="i" class="note" :class="n[0]"><span v-html="md(n[1])"></span></div>
       </div>`
   };
 
